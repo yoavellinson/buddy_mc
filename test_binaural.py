@@ -8,7 +8,7 @@ from testing.tester import Tester
 
 def _main(args):
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
     global __file__
     __file__ = hydra.utils.to_absolute_path(__file__)
@@ -124,15 +124,15 @@ if __name__ == "__main__":
 
         # Inject arguments into sys.argv
         sys.argv.extend([
-            "--config-name=conf_VCTK.yaml",
-            "tester=blind_dereverberation_BUDDy",
+            "--config-name=conf_VCTK_binaural.yaml",
+            "tester=blind_dereverberation_binaural",
             f"tester.checkpoint={ckpt}",
             "tester.sampling_params.T=201",
             f"model_dir={path_experiment}",
             "+gpu=0",
-            "dset=vctk_16k_4s_test-benchmark",
-            "dset.test.path=audio_examples",
-            "dset.test.num_examples=2"
+            "dset=vctk_16k_4s_binaural",
+            # "dset.test.path=audio_examples",
+            # "dset.test.num_examples=16"
         ])
 
 if __name__ == "__main__":

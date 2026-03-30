@@ -12,14 +12,14 @@ train:
   seed: 0
 
 test:
-  _target_: datasets.vctk.VCTKTestPaired
+  _target_: datasets.vctk.BinauralVCTKTestPaired
   segment_length: 65536
   fs: 16000
-  path: /dsi/gannot-lab/gannot-lab1/datasets/VCTK/DS_10283_3443/VCTK-Corpus-0.92/wav16k_rev #/scratch/elec/t412-asp/audio_datasets/speech/VCTK/wav16
+  path: /dsi/gannot-lab/gannot-lab1/datasets/VCTK/DS_10283_3443/VCTK-Corpus-0.92/wav16k
+  rir_df_path: /home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_test_VAE_wsj0_1k_mp.csv
   speakers_discard: ["p280", "p315"]
   speakers_test: ["p226", "p287"]
   normalize: False
   num_examples: 16
- 
   #random seed
   seed: 0

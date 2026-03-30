@@ -448,10 +448,6 @@ class NCSNpp(nn.Module):
         h = torch.view_as_complex(h) #b,D,F,T
         return h
 
-
-
-
-
 class NCSNppTime(NCSNpp):
     """Same as NCSNpp, but wrapped with a STFT/ISTFT layers"""
 
@@ -505,6 +501,57 @@ class NCSNppTime(NCSNpp):
 
         return x_time
 
+
+
+class mNCSNppTime(NCSNpp):
+    """Same as NCSNpp, but wrapped with a STFT/ISTFT layers, and multi channels (binaural)"""
+
+    def __init__(self, stft=None, **kwargs):
+        assert stft is not None, "stft must be provided"
+        super().__init__( 
+        **kwargs)
+        self.stft_kwargs = stft
+
+        self.window = get_window("hann", self.stft_kwargs.n_fft)
+
+
+    def stft(self, sig):
+        window = self.window.to(sig.device)
+        C=sig.shape[1]
+        sig=einops.rearrange(sig, "b c t -> (b c) t")   
+        # spec= torch.stft(sig, **{**self.stft_kwargs, "window": window}, return_complex=True)
+        spec= torch.stft(sig, **{**vars(self.stft_kwargs), "window": window}, return_complex=True)
+        spec=einops.rearrange(spec, "(b c) f t -> b c f t", c=C)
+        #pad in the time axis if the resulting spec is not a multiple of 16
+        N_pad = 16 
+        if spec.shape[-1] % N_pad != 0:
+            num_pad= N_pad - spec.shape[-1] % N_pad
+            spec= torch.nn.functional.pad(spec, (0, num_pad, 0, 0), mode="constant", value=0)
+        spec = spec.type(torch.complex64)
+        return spec
+
+
+    def istft(self, spec, length=None):
+        window = self.window.to(spec.device)
+        c=spec.shape[1]
+        spec=einops.rearrange(spec, "b c f t -> (b c) f t")
+        # sig= torch.istft(spec, **{**self.stft_kwargs, "window": window}, length=length)
+        sig= torch.istft(spec, **{**vars(self.stft_kwargs), "window": window}, length=length)
+        sig=einops.rearrange(sig, "(b c) t -> b c t", c=c)
+        return sig[..., :length]
+
+    def forward(self, x, time_cond=None):
+
+        B,C,T=x.shape
+
+        x_spec=self.stft(x)
+        x_spec=super().forward(x_spec, time_cond=time_cond)
+        x_time=self.istft(x_spec, length=T)
+
+        return x_time
+
+
+
         
 
 if __name__ == "__main__":
@@ -530,9 +577,10 @@ if __name__ == "__main__":
     # ch_mult = [1, 2, 2, 2]
     # nf = 128
 
-    x, sr = torchaudio.load("/data/lemercier/databases/vctk_derev_with_rir/audio/tt/clean/p376_295_3074_t60=1.06.wav")
+    x, sr = torchaudio.load("/home/workspace/yoavellinson/binaural_TSE_Gen/real_rec/mixtures_HATS_0_270/mix_0.wav")
     # x, sr = torchaudio.load("/data/lemercier/databases/RIRs_organized/ACE_organized/data/Crucif_403a_1_RIR.wav")
-    x = x[0].unsqueeze(0)
+    # x = x[0].unsqueeze(0)
+    # x = x.unsqueeze(0)
     x = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)(x)
 
     window = get_window("hann", stft_kwargs["n_fft"])
@@ -546,11 +594,10 @@ if __name__ == "__main__":
 
     stft = argparse.Namespace(**stft_kwargs)
 
-    dnn = NCSNppTime(stft, input_channels=2)
+    dnn = mNCSNppTime(stft, input_channels=2,spatial_channels=2)
 
     T = 2.1
-    x = torch.randn(2, 1, int(16000 * T))
-    sigma = torch.randn(2,)
-
+    x = x[:,:4*16000].unsqueeze(0)#torch.randn(2, 1, int(16000 * T))
+    sigma = torch.randn(1,)
     xhat = dnn.cuda()(x.cuda(), sigma.cuda())
     print(int(16000 * T), x.shape, xhat.shape)

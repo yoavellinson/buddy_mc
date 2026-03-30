@@ -1,5 +1,6 @@
 experiments
 outputs
 wandb
+ckpt
 **/__pycache__
 **/**/__pycache__

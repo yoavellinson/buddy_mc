@@ -16,3 +16,4 @@ onnxruntime
 matplotlib
 torchcde
 ninja
+nara_wpe

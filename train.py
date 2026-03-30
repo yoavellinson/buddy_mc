@@ -45,7 +45,6 @@ def _main(args):
 
     # Trainer
     trainer=hydra.utils.instantiate(args.exp.trainer, args, train_loader, network, diff_params, tester, device) # This works
-
     # Print options.
     print()
     print('Training options:')

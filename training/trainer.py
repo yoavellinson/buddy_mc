@@ -10,6 +10,7 @@ import re
 import hydra
 import wandb
 import omegaconf
+from tqdm import tqdm
 
 from utils.torch_utils import training_stats
 from utils.torch_utils import misc
@@ -301,7 +302,8 @@ class Trainer():
             self.wandb_run.log({"spec_"+str(string): spec_sample}, step=self.it)
 
     def training_loop(self):
-
+        pbar = tqdm(total=self.args.exp.max_iters, desc="Training")
+        pbar.update(self.it)
         while True:
             self.train_step()
             self.update_ema()
@@ -327,6 +329,7 @@ class Trainer():
             if self.it>0 and self.it%self.args.logging.log_interval==0 and self.args.logging.log:
                 self.easy_logging()
 
+            pbar.update(1)
             # Update state.
             self.it += 1
             try:
@@ -334,5 +337,5 @@ class Trainer():
                     break
             except:
                 pass
-
+        pbar.close()
     #----------------------------------------------------------------------------

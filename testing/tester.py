@@ -58,7 +58,7 @@ class Tester():
             raise ValueError("No checkpoint found")
 
     def load_checkpoint(self, path):
-        state_dict = torch.load(path, map_location=self.device)
+        state_dict = torch.load(path, map_location=self.device,weights_only=False)
         try:
             self.it=state_dict['it']
         except:
@@ -162,6 +162,47 @@ class Tester():
             
             print(path_reconstructed)
 
+    def test_binaural_dereverberation(self, mode, blind=False):
+
+        if self.test_set is None:
+            print("No test set specified")
+            return
+        if len(self.test_set) == 0:
+            print("No samples found in test set")
+            return
+        
+        for i, (original, rir,  filename) in enumerate(tqdm(self.test_set)):
+
+            seg = torch.from_numpy(original).float().to(self.device)
+            seg = self.args.tester.posterior_sampling.warm_initialization.scaling_factor * seg / seg.std() #Normalize the input to match sigma_data of dataset
+
+            #read and prepare the RIR
+            y=torch.Tensor(rir).to(self.device)
+
+            # with torch.no_grad():
+
+            #     # Forward pass with true RIR
+            #     operator_ref = RIROperator(self.args.tester.informed_dereverberation.op_hp, time_kernel_size=RIR.shape[-1], sample_rate=self.args.exp.sample_rate)
+            #     operator_ref.update_params(RIR)
+            #     y = operator_ref.degradation(seg.unsqueeze(0))
+
+            #     if blind: # Initialize operator
+            #         assert self.args.tester.blind_dereverberation.operator == "subband_filtering"
+            #         operator_blind = BlindSubbandFiltering(self.args.tester.informed_dereverberation.op_hp, sample_rate=self.args.exp.sample_rate)
+            #         with torch.no_grad():
+            #             operator_blind.update_H(use_noise=True)
+
+            pred = self.sampler.predict_conditional(y) #, operator_blind if blind else operator_ref, shape=(1,seg.shape[-1]), blind=blind)
+
+            path_original=utils_logging.write_audio_file(seg, self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"original"],stereo=False)
+            path_degraded=utils_logging.write_audio_file(y.unsqueeze(0), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"degraded"],stereo=True)
+            path_reconstructed=utils_logging.write_audio_file(pred.unsqueeze(0), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"reconstructed"],stereo=True)
+            
+            # utils_logging.write_audio_file(RIR.detach().cpu(), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"true_rir"])
+            # if blind:
+            #     utils_logging.write_audio_file(self.sampler.operator.get_time_RIR().detach().cpu(), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"estimated_rir"])
+            
+            print(path_reconstructed)
 
 
     def prepare_directories(self, mode, unconditional=False, blind=False):
@@ -231,6 +272,14 @@ class Tester():
                     self.prepare_directories(m)
                     self.save_experiment_args(m)
                 self.test_dereverberation(m, blind=True)
+
+            elif m == "binaural_dereverberation":
+                print("testing binaural dereverberation")
+                if not self.in_training:
+                    self.prepare_directories(m)
+                    self.save_experiment_args(m)
+                self.test_binaural_dereverberation(m, blind=True)
+
 
             else:
                 print("Warning: unknown mode: ", m)

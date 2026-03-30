@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../binaural_TSE_Gen"
+		},
+		{
+			"path": "../../../../dsi/gannot-lab/gannot-lab1/datasets/VCTK/DS_10283_3443/VCTK-Corpus-0.92"
+		},
+		{
+			"path": "../ArrayDPS_B"
+		}
+	],
+	"settings": {}
+}

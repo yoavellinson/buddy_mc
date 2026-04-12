@@ -246,6 +246,7 @@ class BinauralVCTKTestPaired(torch.utils.data.Dataset):
         random.seed(seed)
         np.random.seed(seed)
         self.rir_df = pd.read_csv(rir_df_path)
+        self.rir_df = self.rir_df[self.rir_df['rt_60'].between(1.2, 1.9)] #high rev for testing only
         self.test_samples=[]
         self.rir_samples=[]
         #iterate over speakers directories
@@ -300,8 +301,54 @@ class BinauralVCTKTestPaired(torch.utils.data.Dataset):
 
             data_rir = self.conv_h(file,file_rir)
             segment_rir = self.fix_length_2d(data_rir)
+            # segment_rir = self.add_diffuse_noise(segment_rir,5)
             self.test_rir.append(segment_rir) 
+
+    def add_diffuse_noise(self, signal, snr_db,num_sources=36):
+        """
+            Adds diffuse noise to a binaural signal in the time domain.
             
+            Args:
+                signal: [2, Samples] - The original binaural audio.
+                snr_db: The desired Signal-to-Noise Ratio in decibels.
+                num_sources: Number of virtual sources to simulate a diffuse field.
+            """
+        num_channels, num_samples = signal.shape
+        diffuse_noise = np.zeros_like(signal)
+        
+        # 1. Generate the diffuse field 
+        # We sum independent noise with random delays/gains per channel
+        # to mimic sound arriving from all angles.
+        for _ in range(num_sources):
+            # Independent white noise source
+            source = np.random.normal(0, 1, num_samples)
+            
+            # Random Interaural Time Delay (ITD) between -0.7ms and 0.7ms
+            # (approx. max delay for a human head)
+            delay = np.random.randint(-11, 12) # ~0.7ms at 16kHz
+            
+            # Random Interaural Level Difference (ILD)
+            gain_l = np.random.uniform(0.5, 1.0)
+            gain_r = np.random.uniform(0.5, 1.0)
+            
+            # Apply shift and add to the total noise field
+            diffuse_noise[0, :] += gain_l * np.roll(source, delay)
+            diffuse_noise[1, :] += gain_r * source
+
+        # 2. Calculate Scaling Factor for SNR
+        # SNR_dB = 10 * log10(P_signal / P_noise)
+        sig_power = np.mean(np.square(signal))
+        noise_power = np.mean(np.square(diffuse_noise))
+        
+        # Target noise power based on SNR
+        target_noise_power = sig_power / (10**(snr_db / 10))
+        
+        # Scale the diffuse noise to match target power
+        scale = np.sqrt(target_noise_power / (noise_power + 1e-12))
+        noisy_signal = signal + (diffuse_noise * scale)
+        
+        return noisy_signal
+        
     def fix_length_2d(self,segment):
         #segment: C,T
         L=len(segment[0,:])

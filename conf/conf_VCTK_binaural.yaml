@@ -5,7 +5,8 @@ defaults:
   - tester: only_unconditional
   - exp: VCTK_16k_4s_time
   - logging: base_logging
-
+  - override hydra/launcher: joblib
+  - _self_  # Keeps your other config settings below
 model_dir: "experiments"
 
 hydra:
@@ -18,3 +19,7 @@ hydra:
         # Remove all paths, as the / in them would mess up things
         exclude_keys: ['path_experiment',
           'hydra.job_logging.handles.file.filename']
+  launcher:
+    n_jobs: 4  # Matches your 4 GPUs
+  sweep:
+    dir: ${model_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}

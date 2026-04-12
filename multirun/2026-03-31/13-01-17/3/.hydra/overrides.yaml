@@ -1,0 +1,10 @@
+- tester=blind_dereverberation_binaural
+- tester.checkpoint=/home/workspace/yoavellinson/buddy_mc/ckpt/VCTK_16k_4s_time-190000.pt
+- tester.posterior_sampling.zeta=0.2
+- tester.sampling_params.alpha=0.3
+- tester.sampling_params.warmup_steps=10
+- tester.sampling_params.beta_min=0.6
+- model_dir=experiments/buddy_grid_search
+- +gpu=0
+- dset=vctk_16k_4s_binaural
+- dset.test.num_examples=1

@@ -1,0 +1,297 @@
+dset:
+  train:
+    _target_: datasets.vctk.VCTKTrain
+    segment_length: 65536
+    fs: 16000
+    path: /dsi/gannot-lab/gannot-lab1/datasets/VCTK/DS_10283_3443/VCTK-Corpus-0.92/wav16k
+    speakers_discard:
+    - p280
+    - p315
+    speakers_test:
+    - p351
+    - p360
+    normalize: false
+    seed: 0
+  test:
+    _target_: datasets.vctk.BinauralVCTKTestPaired
+    segment_length: 65536
+    fs: 16000
+    path: /dsi/gannot-lab/gannot-lab1/datasets/VCTK/DS_10283_3443/VCTK-Corpus-0.92/wav16k
+    rir_df_path: /home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_test_VAE_wsj0_1k_mp.csv
+    speakers_discard:
+    - p280
+    - p315
+    speakers_test:
+    - p226
+    - p287
+    normalize: false
+    num_examples: 1
+    seed: 0
+network:
+  _target_: networks.ncsnpp.NCSNppTime
+  stft:
+    n_fft: 510
+    hop_length: 128
+    center: true
+  nonlinearity: swish
+  nf: 128
+  ch_mult:
+  - 1
+  - 2
+  - 2
+  - 2
+  num_res_blocks: 1
+  attn_resolutions:
+  - 0
+  resamp_with_conv: true
+  time_conditional: true
+  fir: false
+  fir_kernel:
+  - 1
+  - 3
+  - 3
+  - 1
+  skip_rescale: true
+  resblock_type: biggan
+  progressive: output_skip
+  progressive_input: input_skip
+  progressive_combine: sum
+  init_scale: 0
+  fourier_scale: 16
+  image_size: 256
+  embedding_type: fourier
+  input_channels: 2
+  spatial_channels: 1
+  dropout: 0
+  centered: true
+  discriminative: false
+diff_params:
+  _target_: diff_params.edm.EDM
+  type: ve_karras
+  sde_hp:
+    sigma_data: 0.05
+    sigma_min: 1.0e-05
+    sigma_max: 10
+    rho: 10
+tester:
+  name: blind_dereverberation_buddy
+  tester:
+    _target_: testing.tester.Tester
+  sampler:
+    _target_: testing.BinauralEulerHeunSamplerDPS.BinauralEulerHeunSamplerDPS
+  modes:
+  - binaural_dereverberation
+  checkpoint: /home/workspace/yoavellinson/buddy_mc/ckpt/VCTK_16k_4s_time-190000.pt
+  sampling_params:
+    same_as_training: false
+    sde_hp:
+      sigma_data: 0.05
+      sigma_min: 0.0001
+      sigma_max: 0.5
+      rho: 10
+    Schurn: 50
+    Snoise: 1
+    Stmin: 0
+    Stmax: 10
+    order: 1
+    T: 201
+    schedule: edm
+    warmup_steps: 10
+    M: 12
+    beta_min: 0.6
+    beta_max: 0.99
+    alpha: 0.35
+  posterior_sampling:
+    zeta: 0.23
+    rec_loss:
+      name: l2_comp_stft_summean
+      weight: 512
+      frequency_weighting: none
+      compression_factor: 0.667
+      multiple_compression_factors: false
+    rec_loss_params:
+      name: l2_comp_stft_summean
+      weight: 512
+      frequency_weighting: none
+      compression_factor: 0.667
+      multiple_compression_factors: false
+      compression_factors:
+      - 1
+      - 0.1
+      weights:
+      - 1
+      - 0.1
+    RIR_noise_regularization:
+      use: true
+      crop_sigma_max: 0.01
+      crop_sigma_min: 0.0005
+      loss:
+        name: l2_comp_stft_summean
+        weight: 2560
+        frequency_weighting: none
+        compression_factor: 0.667
+        multiple_compression_factors: false
+    project_parameters: true
+    normalization_type: grad_norm
+    blind_hp:
+      optimizer: adam
+      lr_op: 0.1
+      beta1: 0.9
+      beta2: 0.99
+      noise: 0.1
+      lr_op_phase: 1
+      weight_decay: 0
+      op_updates_per_step: 10
+      grad_clip: 1
+    warm_initialization:
+      mode: wpe_scaled
+      scaling_factor: 0.05
+      wpe:
+        delay: 2
+        taps: 50
+        iterations: 5
+    constraint_speech_magnitude:
+      use: true
+      speech_scaling: 0.05
+  unconditional:
+    num_samples: 1
+    audio_len: 65536
+  informed_dereverberation:
+    path_RIRs: '...'
+    files: '...'
+    operator: subband_filtering
+    name_params:
+    - T60s
+    - weights
+    op_hp:
+      fix_EQ_extremes: true
+      NFFT: 1024
+      win_length: 512
+      hop: 128
+      window: hann
+      Nf: 100
+      EQ_freqs:
+      - 0
+      - 125
+      - 250
+      - 375
+      - 500
+      - 625
+      - 750
+      - 875
+      - 1000
+      - 1250
+      - 1500
+      - 1750
+      - 2000
+      - 2250
+      - 2500
+      - 2750
+      - 3000
+      - 3500
+      - 4000
+      - 4500
+      - 5000
+      - 5500
+      - 6000
+      - 6500
+      - 7000
+      - 7500
+      - 8000
+      init_single_value: true
+      init_params:
+        T60_breakpoints:
+        - 0.1
+        multiexp_weighting:
+        - 2
+      init_phases: random_coherent
+      minimum_phase: true
+      fix_direct_path: true
+      num_GL_iter: 1
+      cumulative_decays: false
+      decay_scale: 1
+      Amin: 0
+      Amax: 40
+      T60min: 0.1
+      T60max: 2
+      clamp_A: true
+      clamp_decay: true
+      strictly_decreasing_decay: false
+      enforce_long_decay_in_second_exponential: true
+      n_iter_PR: 5
+  blind_dereverberation:
+    operator: subband_filtering
+    test_params:
+      T60_breakpoints:
+      - - 0.1
+        - 0.1
+        - 0.1
+        - 0.1
+        - 0.1
+        - 0.1
+        - 0.1
+        - 0.1
+        - 0.1
+      multiexp_weighting:
+      - - 2
+        - 2
+        - 2
+        - 2
+        - 2
+        - 2
+        - 2
+        - 2
+        - 2
+exp:
+  exp_name: VCTK_16k_binaural_grid_search
+  model_dir: experiments
+  trainer:
+    _target_: training.trainer.Trainer
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 0.0001
+    betas:
+    - 0.9
+    - 0.999
+    eps: 1.0e-08
+  lr_rampup_it: 10000
+  scheduler_step_size: 60000
+  scheduler_gamma: 0.8
+  batch_size: 16
+  max_iters: 190000
+  num_workers: 4
+  seed: 1
+  resume: true
+  resume_checkpoint: None
+  sample_rate: 16000
+  audio_len: 65536
+  ema_rate: 0.9999
+  ema_rampup: 10000
+  use_grad_clip: true
+  max_grad_norm: 1
+  restore: false
+  checkpoint_id: None
+logging:
+  log: true
+  log_interval: 1000
+  heavy_log_interval: 10000
+  save_model: true
+  save_interval: 10000
+  remove_old_checkpoints: true
+  num_sigma_bins: 20
+  print_model_summary: false
+  profiling:
+    enabled: true
+    wait: 5
+    warmup: 10
+    active: 2
+    repeat: 1
+  log_spectrograms: false
+  stft:
+    win_size: 1024
+    hop_size: 256
+  wandb:
+    entity: eloimoliner
+    project: audiodps
+model_dir: experiments/buddy_grid_search
+gpu: 0

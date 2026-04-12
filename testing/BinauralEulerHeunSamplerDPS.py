@@ -23,9 +23,12 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
         super().__init__(model, diff_params, args)
         self.zeta = self.args.tester.posterior_sampling.zeta
         self.stft_options = dict(size=510, shift=128)
-        self.rec_loss = CompressedSTFTLoss(compression_factor=1/2)#SiSDRLoss() #L2ComplexSTFTSumMean()
-        self.beta = 0.9
-        self.warmup_steps = 25
+        self.rec_loss = SiSDRLoss() if args.tester.posterior_sampling.rec_loss.name =='sisdr' else CompressedSTFTLoss() #L2ComplexSTFTSumMean()
+        self.warmup_steps = self.args.tester.sampling_params.warmup_steps
+        self.M = self.args.tester.sampling_params.M
+        self.alpha = self.args.tester.sampling_params.alpha
+        self.beta_min = self.args.tester.sampling_params.beta_min
+        self.beta_max = self.args.tester.sampling_params.beta_max
 
     def initialize_x(self, shape, device, schedule):
         Y = self.stft(self.y)
@@ -75,7 +78,15 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
             raise NotImplementedError
         
         return x
-    
+    def reset_buffers(self):
+        """Call this at the very beginning of predict() for every new file"""
+        if hasattr(self, 'running_Rxx'):
+            del self.running_Rxx
+        if hasattr(self, 'running_rxy'):
+            del self.running_rxy
+        # Clear the CUDA cache to defragment memory
+        torch.cuda.empty_cache()
+
     def stft(self, time_signal):
         """
         Args:
@@ -107,8 +118,7 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
         )
         
         return stft_signal
-
-
+    
     def istft(self, stft_signal, length=None):
         """
         Args:
@@ -142,6 +152,20 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
         
         return time_signal
     
+    def get_current_beta(self, i):
+        """
+        Beta schedule for T=201.
+        Starts at 0.6 (agile) and finishes at 0.99 (stable).
+        """
+        start_beta = self.beta_min
+        end_beta = self.beta_max
+        progress = i / self.T
+        steepness = 10 
+        center = 0.3
+        
+        weight = torch.sigmoid(torch.tensor(steepness * (progress - center)))
+        return start_beta + weight * (end_beta - start_beta)
+        
     def apply_ctf(self, S_binaural, h_tilde):
         """
         Args:
@@ -180,7 +204,7 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
         return Y_reverb
     
 
-    def generate_early_binaural_output(self, x_den, h_tilde, early_taps=2, cutoff_freq=100):
+    def generate_early_binaural_output(self, x_den, h_tilde, early_taps=2, cutoff_freq=70,ch=3):
         """
         Implements: y_hat_B = [W * h_early] * x_den_clean + HPF
         
@@ -191,8 +215,12 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
             cutoff_freq: Cutoff for the HPF in Hz (Default 100Hz)
         """
         # 1. Standardize x_den to STFT [J, F, T]
-        X_den_stft = self.stft(x_den) 
-        
+        X_den_stft = self.stft(x_den)
+        if ch ==1: #both right ch
+            X_den_stft[0,:,:] = X_den_stft[1,:,:]
+        elif ch ==0: #both left ch
+            X_den_stft[1,:,:] = X_den_stft[0,:,:]
+
         # 2. Truncate to Early Reflections only
         h_early = h_tilde[:, :, :early_taps]
         
@@ -215,19 +243,40 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
         
         return y_binaural_filtered
     
+    def export_h_tilde(self,h_tilde):
+        """
+        Args:
+            h_tilde: [J, F, M] Complex Tensor
+            fs: Sample rate (e.g., 16000)
+            filename: path to save .wav
+        """
+        # 1. Move to CPU and detach
+        h = h_tilde.detach().cpu() # [2, 256, 12]
+        J, F, M = h.shape
+
+        h_time = torch.fft.irfft(h, n=510, dim=1) # [2, 510, 12]
+
+        h_wav = h_time.permute(0, 2, 1).reshape(J, -1) # [2, M * 510]
+
+        # 4. Normalize to avoid clipping
+        h_wav = h_wav / (torch.max(torch.abs(h_wav)) + 1e-8)
+        return h_wav
+
     def get_likelihood_score(self, X_den, x, h_tilde):
 
         Y_hat = self.apply_ctf(X_den.permute(1,0,2),h_tilde)
-        # y_hat = self.istft(Y_hat)
-        # rec = self.rec_loss(y_hat,self.y)
-        rec = self.rec_loss(Y_hat,self.Y.permute(2,1,0))
+        if self.args.tester.posterior_sampling.rec_loss.name =='sisdr':
+            y_hat = self.istft(Y_hat)
+            rec = self.rec_loss(y_hat,self.y)
+        else:
+            rec = self.rec_loss(Y_hat,self.Y.permute(2,1,0))
         rec_grads = torch.autograd.grad(outputs=rec, inputs=x)[0]
 
         # Normalize weighting parameter zeta
         normguide = torch.norm(rec_grads)/(self.args.exp.audio_len**0.5)
         return self.zeta / (normguide+1e-8) * rec_grads, rec
     
-    def update_statistics(self, Xj, Yj, i, j, M=12):
+    def update_statistics(self, Xj, Yj, i, j):
             """
             Args:
                 j: The channel index (0 for Left, 1 for Right)
@@ -236,12 +285,12 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
             if not hasattr(self, 'running_Rxx'):
                 F = Xj.shape[0]
                 dev = Xj.device
-                self.running_Rxx = torch.zeros((2, F, M, M), dtype=Xj.dtype, device=dev)
-                self.running_rxy = torch.zeros((2, F, 1, M), dtype=Xj.dtype, device=dev)
+                self.running_Rxx = torch.zeros((2, F, self.M, self.M), dtype=Xj.dtype, device=dev)
+                self.running_rxy = torch.zeros((2, F, 1, self.M), dtype=Xj.dtype, device=dev)
 
             # 2. Compute current Snapshot
-            Xj_padded = torch.nn.functional.pad(Xj, (M - 1, 0))
-            X_mat = Xj_padded.unfold(1, M, 1).flip(-1) 
+            Xj_padded = torch.nn.functional.pad(Xj, (self.M - 1, 0))
+            X_mat = Xj_padded.unfold(1, self.M, 1).flip(-1) 
             
             Rxx_snapshot = torch.einsum('fti,ftj->fij', X_mat, X_mat.conj())
             rxy_snapshot = torch.einsum('ft,ftm->fm', Yj, X_mat.conj()).unsqueeze(1)
@@ -249,16 +298,15 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
             # 3. Recursive Update (per channel j)
             if i < self.warmup_steps:
                 # During warmup, we take the snapshot directly to initialize the buffer
-                self.running_Rxx[j] = Rxx_snapshot
-                self.running_rxy[j] = rxy_snapshot
+                self.running_Rxx[j] += Rxx_snapshot
+                self.running_rxy[j] += rxy_snapshot
             else:
                 # Apply forgetting factor to the specific channel
-                self.running_Rxx[j] = self.beta * self.running_Rxx[j] + (1 - self.beta) * Rxx_snapshot
-                self.running_rxy[j] = self.beta * self.running_rxy[j] + (1 - self.beta) * rxy_snapshot
+                beta = self.get_current_beta(i)
+                self.running_Rxx[j] = beta * self.running_Rxx[j] + (1 - beta) * Rxx_snapshot
+                self.running_rxy[j] = beta * self.running_rxy[j] + (1 - beta) * rxy_snapshot
 
-
-
-    def stepEM(self, x_i, t_i, t_iplus1, gamma_i,i, M=12, eps=1e-5):
+    def stepEM(self, x_i, t_i, t_iplus1, gamma_i,i, eps=1e-5):
         x_hat, t_hat = self.stochastic_timestep(x_i, t_i, gamma_i)
         x_hat = x_hat.detach().requires_grad_(True)
         
@@ -266,17 +314,23 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
         x_den = self.get_Tweedie_estimate(x_hat, t_hat) #\hat{x_0}
         X_den = self.stft(x_den).permute(2, 1, 0)
         # X_den = torch.tensor(X_den_np)
-        h_tilde = torch.zeros((2,X_den.shape[1],M),dtype=X_den.dtype)
-        #M step
-        eye = torch.eye(M, device=x_den.device).unsqueeze(0) # [1, M, M]
-        for j in range(2):
-            Xj = X_den[:,:,j].T
-            Yj = self.Y[:,:,j].T
-            self.update_statistics(Xj=Xj,Yj=Yj,i=i,j=j)
-            Rxx_stable = self.running_Rxx[j] + eps * eye
-            h_column = torch.linalg.solve(Rxx_stable, self.running_rxy[j].conj().transpose(1, 2))
-            h_tilde[j] = h_column.conj().transpose(1, 2).squeeze()
-
+        if i < self.warmup_steps:
+            # Use a Delta function (Identity) RIR initially
+            h_tilde = torch.zeros((2, X_den.shape[1], self.M), dtype=X_den.dtype)
+            h_tilde[:, :, 0] = 1.0
+        else:
+            h_tilde = torch.zeros((2,X_den.shape[1],self.M),dtype=X_den.dtype)
+            #M step
+            eye = torch.eye(self.M, device=x_den.device).unsqueeze(0) # [1, M, M]
+            for j in range(2):
+                Xj = X_den[:,:,j].T
+                Yj = self.Y[:,:,j].T
+                self.update_statistics(Xj=Xj,Yj=Yj,i=i,j=j)
+                Rxx_stable = self.running_Rxx[j] + eps * eye
+                h_column = torch.linalg.solve(Rxx_stable, self.running_rxy[j].conj().transpose(1, 2))
+                h_tilde[j] = h_column.conj().transpose(1, 2).squeeze()
+        decay = torch.exp(-self.alpha * torch.arange(self.M).to(h_tilde.device)).view(1, 1, self.M)
+        h_tilde = h_tilde * decay
    
         if self.args.tester.posterior_sampling.constraint_speech_magnitude.use:
             x_den = self.args.tester.posterior_sampling.constraint_speech_magnitude.speech_scaling / x_den.detach().std() * x_den #Match the sigma_data of dataset
@@ -295,14 +349,13 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
 
         return x_iplus1.detach_(), x_den.detach(),h_tilde.detach()
 
-
-
     def predict(
         self,
         shape, 
         device,
         blind=False
     ):
+        self.reset_buffers()
         # get the noise schedule
         t = self.create_schedule().to(device)
 
@@ -315,13 +368,21 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
         for i in tqdm(range(0, self.T, 1)):
             self.step_counter=i
             x, x_den,h_tilde = self.stepEM(x, t[i] , t[i+1], gamma[i],i)
+        h_tilde_wav = self.export_h_tilde(h_tilde)
+        return x_den
+        # y_binaural_filtered = F_audio.highpass_biquad(
+        #      x_den.detach(), 
+        #     sample_rate=16000, 
+        #     cutoff_freq=100, 
+        #     Q=0.707 
+        # )
 
-        # return  x_den.detach()
-        y_final = self.generate_early_binaural_output(x_den, h_tilde)
+        # return y_binaural_filtered,h_tilde_wav
+        y_final = self.generate_early_binaural_output(x_den, h_tilde,early_taps=2)
 
         # Global normalization (preserves the L/R ratio)
         y_final = y_final / (torch.max(torch.abs(y_final)) + 1e-8)
-        return y_final
+        return y_final,h_tilde_wav
     
     def predict_unconditional(self, *args, **kwargs):
         raise ValueError("DPS not made for unconditional sampling")

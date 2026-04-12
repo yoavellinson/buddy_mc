@@ -25,13 +25,17 @@ sampling_params:
   order: 1 #order of the sampler (1 or 2)
   T:  201 #number of discretizatio steprs
   schedule: "edm" #"log": log schedule using the parameters in sampling_params
+  warmup_steps: 5
+  M: 12
+  beta_min: 0.4
+  beta_max: 0.99
+  alpha: 0.35
 
 posterior_sampling:
 
-  zeta: 0.5
-
+  zeta: 0.3
   rec_loss: 
-    name: "l2_comp_stft_summean"
+    name: "l2_comp_stft_summean" #"sisdr"
     weight: 512
     frequency_weighting: "none"
     compression_factor: 0.667

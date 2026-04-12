@@ -179,29 +179,17 @@ class Tester():
             #read and prepare the RIR
             y=torch.Tensor(rir).to(self.device)
 
-            # with torch.no_grad():
-
-            #     # Forward pass with true RIR
-            #     operator_ref = RIROperator(self.args.tester.informed_dereverberation.op_hp, time_kernel_size=RIR.shape[-1], sample_rate=self.args.exp.sample_rate)
-            #     operator_ref.update_params(RIR)
-            #     y = operator_ref.degradation(seg.unsqueeze(0))
-
-            #     if blind: # Initialize operator
-            #         assert self.args.tester.blind_dereverberation.operator == "subband_filtering"
-            #         operator_blind = BlindSubbandFiltering(self.args.tester.informed_dereverberation.op_hp, sample_rate=self.args.exp.sample_rate)
-            #         with torch.no_grad():
-            #             operator_blind.update_H(use_noise=True)
-
-            pred = self.sampler.predict_conditional(y) #, operator_blind if blind else operator_ref, shape=(1,seg.shape[-1]), blind=blind)
-
+            pred,h = self.sampler.predict_conditional(y) #, operator_blind if blind else operator_ref, shape=(1,seg.shape[-1]), blind=blind)
+            f_name_new = os.path.basename(filename)[: -4]+f'_alpha_{self.args.tester.sampling_params.alpha}' +f'_zeta_{self.args.tester.posterior_sampling.zeta}'+f'_alpha_{self.args.tester.sampling_params.alpha}' +f'_warmup_steps_{self.args.tester.sampling_params.warmup_steps}'+f'_beta_min_{self.args.tester.sampling_params.beta_min}'+f'_rec_loss_{self.args.tester.posterior_sampling.rec_loss.name}'
             path_original=utils_logging.write_audio_file(seg, self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"original"],stereo=False)
             path_degraded=utils_logging.write_audio_file(y.unsqueeze(0), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"degraded"],stereo=True)
-            path_reconstructed=utils_logging.write_audio_file(pred.unsqueeze(0), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"reconstructed"],stereo=True)
-            
-            # utils_logging.write_audio_file(RIR.detach().cpu(), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"true_rir"])
-            # if blind:
-            #     utils_logging.write_audio_file(self.sampler.operator.get_time_RIR().detach().cpu(), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"estimated_rir"])
-            
+            path_reconstructed=utils_logging.write_audio_file(pred.unsqueeze(0), self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"reconstructed"],stereo=True)
+            path_h=utils_logging.write_audio_file(h.unsqueeze(0), self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"true_rir"],stereo=True)
+
+            # Force Garbage Collection
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
             print(path_reconstructed)
 
 

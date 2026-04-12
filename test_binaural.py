@@ -3,12 +3,14 @@ import hydra
 import torch
 import utils.setup as setup
 import urllib
+from omegaconf import open_dict
+from hydra.core.hydra_config import HydraConfig
 
 from testing.tester import Tester
 
 def _main(args):
 
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
 
     global __file__
     __file__ = hydra.utils.to_absolute_path(__file__)
@@ -97,45 +99,89 @@ def _main(args):
 
     tester.do_test()
 
-@hydra.main(config_path="conf", config_name="conf", version_base=str(hydra.__version__))
+# @hydra.main(config_path="conf", config_name="conf", version_base=str(hydra.__version__))
+# def main(args):
+#     torch.cuda.set_device(args.gpu)
+#     _main(args)
+@hydra.main(config_path="conf", config_name="conf_VCTK_binaural", version_base=str(hydra.__version__))
 def main(args):
+    # 1. Get the job index from the multirun sweep
+    job_num = HydraConfig.get().job.num
+    
+    # 2. Unlock the config to add the 'gpu' key if it doesn't exist
+    with open_dict(args):
+        # This cycles 0, 1, 2, 3 based on your 4 GPUs
+        args.gpu = args.get("gpu", job_num % 4)
+    
+    # 3. Set the device globally for this process
+    print(f"Running Job {job_num} on GPU {args.gpu}")
     torch.cuda.set_device(args.gpu)
+    
     _main(args)
 
-if __name__ == "__main__":
-    import os
-    import sys
-
-    # --- DEBUGGING SHIM START ---
-    # Only run this if we are in a debugging environment or running manually
-    if len(sys.argv) == 1:  # If no arguments are passed, use these defaults
-        sys.path.append(os.getcwd())
-        os.environ["TORCH_USE_RTLD_GLOBAL"] = "YES"
-        os.environ["HYDRA_FULL_ERROR"] = "1"
-        os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-
-        # Define your paths
-        ckpt = "/home/workspace/yoavellinson/buddy_mc/ckpt/VCTK_16k_4s_time-190000.pt"
-        name = "buddy_wpe-init_noise-prior_N-201_rir-aligned_1exp"
-        path_experiment = f"experiments/{name}"
-        
-        # Ensure the directory exists
-        os.makedirs(path_experiment, exist_ok=True)
-
-        # Inject arguments into sys.argv
-        sys.argv.extend([
-            "--config-name=conf_VCTK_binaural.yaml",
-            "tester=blind_dereverberation_binaural",
-            f"tester.checkpoint={ckpt}",
-            "tester.sampling_params.T=201",
-            f"model_dir={path_experiment}",
-            "+gpu=0",
-            "dset=vctk_16k_4s_binaural",
-            # "dset.test.path=audio_examples",
-            # "dset.test.num_examples=16"
-        ])
-
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
 
-#----------------------------------------------------------------------------
+# if __name__ == "__main__":
+#     import os
+#     import sys
+#     for zeta in [0.001,0.005,0.01,0.05]:
+#         # --- DEBUGGING SHIM START ---
+#         # Only run this if we are in a debugging environment or running manually
+#         if len(sys.argv) == 1:  # If no arguments are passed, use these defaults
+#             sys.path.append(os.getcwd())
+#             os.environ["TORCH_USE_RTLD_GLOBAL"] = "YES"
+#             os.environ["HYDRA_FULL_ERROR"] = "1"
+#             os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
+#             # Define your paths
+#             ckpt = "/home/workspace/yoavellinson/buddy_mc/ckpt/VCTK_16k_4s_time-190000.pt"
+#             name = "buddy_wpe-init_noise-prior_N-201_rir-aligned_1exp"
+#             path_experiment = f"experiments/{name}"
+            
+#             # Ensure the directory exists
+#             os.makedirs(path_experiment, exist_ok=True)
+
+#             # Inject arguments into sys.argv
+#             sys.argv.extend([
+#                 "--config-name=conf_VCTK_binaural.yaml",
+#                 "tester=blind_dereverberation_binaural",
+#                 f"tester.checkpoint={ckpt}",
+#                 f"tester.posterior_sampling.zeta={zeta}",
+#                 f"model_dir={path_experiment}",
+#                 "+gpu=0",
+#                 "dset=vctk_16k_4s_binaural",
+#                 "dset.test.num_examples=1",
+#             ])
+#         print(zeta)
+#         main()
+
+
+'''
+
+python test_binaural.py -m \
+    --config-name=conf_VCTK_binaural.yaml \
+    tester=blind_dereverberation_binaural \
+    tester.checkpoint=/home/workspace/yoavellinson/buddy_mc/ckpt/VCTK_16k_4s_time-190000.pt \
+    tester.posterior_sampling.zeta=0.22,0.3,0.5,0.05,0.005 \
+    tester.posterior_sampling.rec_loss.name='sisdr','stft_comp' \
+    tester.sampling_params.alpha=0.32,0.35 \
+    tester.sampling_params.warmup_steps=5,10,15,20 \
+    tester.sampling_params.beta_min=0.4,0.6 \
+    model_dir=experiments/buddy_grid_search \
+    dset=vctk_16k_4s_binaural \
+    dset.test.num_examples=20
+
+'''
+
+'''
+
+python test_binaural.py -m \
+    --config-name=conf_VCTK_binaural.yaml \
+    tester=blind_dereverberation_binaural \
+    tester.checkpoint=/home/workspace/yoavellinson/buddy_mc/ckpt/VCTK_16k_4s_time-190000.pt \
+    model_dir=experiments/final_params \
+    dset=vctk_16k_4s_binaural \
+    tester.posterior_sampling.warm_initialization='none', \
+    dset.test.num_examples=-1
+'''

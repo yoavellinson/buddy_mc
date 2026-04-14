@@ -180,7 +180,7 @@ class Tester():
             y=torch.Tensor(rir).to(self.device)
 
             pred,h = self.sampler.predict_conditional(y) #, operator_blind if blind else operator_ref, shape=(1,seg.shape[-1]), blind=blind)
-            f_name_new = os.path.basename(filename)[: -4]+f'_alpha_{self.args.tester.sampling_params.alpha}' +f'_zeta_{self.args.tester.posterior_sampling.zeta}'+f'_alpha_{self.args.tester.sampling_params.alpha}' +f'_warmup_steps_{self.args.tester.sampling_params.warmup_steps}'+f'_beta_min_{self.args.tester.sampling_params.beta_min}'+f'_rec_loss_{self.args.tester.posterior_sampling.rec_loss.name}'
+            f_name_new = os.path.basename(filename)[: -4]+f'_alpha_{self.args.tester.sampling_params.alpha}' +f'_zeta_{self.args.tester.posterior_sampling.zeta}'+f'_alpha_{self.args.tester.sampling_params.alpha}' +f'_warmup_steps_{self.args.tester.sampling_params.warmup_steps}'+f'_beta_min_{self.args.tester.sampling_params.beta_min}'
             path_original=utils_logging.write_audio_file(seg, self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"original"],stereo=False)
             path_degraded=utils_logging.write_audio_file(y.unsqueeze(0), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"degraded"],stereo=True)
             path_reconstructed=utils_logging.write_audio_file(pred.unsqueeze(0), self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"reconstructed"],stereo=True)
@@ -192,6 +192,38 @@ class Tester():
             torch.cuda.empty_cache()
             print(path_reconstructed)
 
+    def test_monaural_dereverberation(self, mode, blind=False):
+
+        if self.test_set is None:
+            print("No test set specified")
+            return
+        if len(self.test_set) == 0:
+            print("No samples found in test set")
+            return
+        
+        for i, (original, rir,  filename) in enumerate(tqdm(self.test_set)):
+            #binaural to mono:
+            idx = 0
+            rir = rir[idx,:]
+
+            seg = torch.from_numpy(original).float().to(self.device)
+            seg = self.args.tester.posterior_sampling.warm_initialization.scaling_factor * seg / seg.std() #Normalize the input to match sigma_data of dataset
+
+            #read and prepare the RIR
+            y=torch.Tensor(rir).to(self.device).unsqueeze(0)
+
+            pred,h = self.sampler.predict_conditional(y) #, operator_blind if blind else operator_ref, shape=(1,seg.shape[-1]), blind=blind)
+            f_name_new = os.path.basename(filename)[: -4]+ f'_zeta_{self.args.tester.posterior_sampling.zeta}'+f'_M_{self.args.tester.sampling_params.M}' +f'_warmup_steps_{self.args.tester.sampling_params.warmup_steps}'+f'_lambda_stft_{self.args.tester.sampling_params.lambda_stft}'+f'_lambda_h_{self.args.tester.sampling_params.lambda_h}'+f'_eta_{self.args.tester.sampling_params.eta}'
+            path_original=utils_logging.write_audio_file(seg, self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"original"],stereo=False)
+            path_degraded=utils_logging.write_audio_file(y.unsqueeze(0), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"degraded"],stereo=False)
+            path_reconstructed=utils_logging.write_audio_file(pred.unsqueeze(0), self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"reconstructed"],stereo=False)
+            path_h=utils_logging.write_audio_file(h.unsqueeze(0), self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"true_rir"],stereo=False)
+
+            # Force Garbage Collection
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            print(path_reconstructed)
 
     def prepare_directories(self, mode, unconditional=False, blind=False):
             
@@ -268,6 +300,12 @@ class Tester():
                     self.save_experiment_args(m)
                 self.test_binaural_dereverberation(m, blind=True)
 
+            elif m == "monaural_dereverberation":
+                print("testing binaural dereverberation")
+                if not self.in_training:
+                    self.prepare_directories(m)
+                    self.save_experiment_args(m)
+                self.test_monaural_dereverberation(m, blind=True)
 
             else:
                 print("Warning: unknown mode: ", m)

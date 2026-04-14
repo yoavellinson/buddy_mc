@@ -129,9 +129,9 @@ if __name__ == "__main__":
             f"tester.checkpoint={ckpt}",
             "tester.sampling_params.T=201",
             f"model_dir={path_experiment}",
-            "+gpu=0",
+            "+gpu=1",
             "dset=vctk_16k_4s_test-benchmark",
-            "dset.test.path=audio_examples",
+            "dset.test.path=/home/workspace/yoavellinson/buddy_mc/audio_examples",
             "dset.test.num_examples=2"
         ])
 

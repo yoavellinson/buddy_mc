@@ -4,9 +4,9 @@ tester:
   _target_: 'testing.tester.Tester'
 
 sampler:
-  _target_: 'testing.BinauralEulerHeunSamplerDPS.BinauralEulerHeunSamplerDPS'
+  _target_: 'testing.MonauralEulerHeunSamplerDPS.MonauralEulerHeunSamplerDPS'
 
-modes: ["binaural_dereverberation"] #modes to test
+modes: ["monaural_dereverberation"] #modes to test
 
 checkpoint: None
 
@@ -23,13 +23,16 @@ sampling_params:
   Stmin: 0
   Stmax: 10
   order: 1 #order of the sampler (1 or 2)
-  T:  201 #number of discretizatio steprs
+  T: 201 #number of discretizatio steprs
   schedule: "edm" #"log": log schedule using the parameters in sampling_params
   warmup_steps: 5
-  M: 12
+  M: 8
   beta_min: 0.4
   beta_max: 0.99
   alpha: 0.35
+  lambda_stft: 1
+  eta: 1.0
+  lambda_h : 1e-3
 
 posterior_sampling:
 

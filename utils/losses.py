@@ -93,3 +93,6 @@ def get_loss(loss_args, operator=None):
                     raise NotImplementedError(f"rec_loss {loss_args.name} not implemented")
 
                 return lambda x, x_hat: loss_fn(x, x_hat)
+
+
+

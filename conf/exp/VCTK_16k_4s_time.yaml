@@ -1,4 +1,4 @@
-exp_name: "VCTK_16k_binaural_final_params_x_den" #name of the experiment
+exp_name: "VCTK_16k_monaural_sisdr_stft" #name of the experiment
 
 model_dir: experiments #directory where the model will be saved locally
 

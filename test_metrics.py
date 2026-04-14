@@ -1,179 +1,136 @@
-from pathlib import Path
-import torch
-import pandas as pd
-from tqdm import tqdm
-
-from torchmetrics.functional.audio.nisqa import non_intrusive_speech_quality_assessment as nisqa
-import soundfile as sf
 import re
+import torch
+import soundfile as sf
+import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+from pathlib import Path
+from tqdm import tqdm
+
+# Metric Imports
+from torchmetrics.functional.audio.nisqa import non_intrusive_speech_quality_assessment as nisqa
+from torchmetrics.functional.audio.pesq import perceptual_evaluation_speech_quality as pesq
+from torchmetrics.functional.audio.stoi import short_time_objective_intelligibility as stoi
 from pandas.plotting import parallel_coordinates
-import io
+
+# --- Metrics Helper Functions ---
+
+def _sisdr_time_safe(est, ref, eps=1e-8):
+    """Zero-mean SI-SDR."""
+    ref = ref - ref.mean(dim=-1, keepdim=True)
+    est = est - est.mean(dim=-1, keepdim=True)
+    ref_energy = (ref**2).sum(dim=-1, keepdim=True).clamp_min(eps)
+    scale = (est * ref).sum(dim=-1, keepdim=True) / ref_energy
+    s_target = scale * ref
+    e_noise = est - s_target
+    num = (s_target**2).sum(dim=-1).clamp_min(eps)
+    den = (e_noise**2).sum(dim=-1).clamp_min(eps)
+    return 10.0 * torch.log10(num / den)
+
+def align_signals_max(est, ref, max_shift):
+    """Exhaustively finds the best shift within max_shift to maximize correlation."""
+    est_1d, ref_1d = est.view(-1), ref.view(-1)
+    L = min(len(est_1d), len(ref_1d), 32000)
+    ref_chunk = ref_1d[:L]
+    est_chunk = torch.nn.functional.pad(est_1d[:L], (max_shift, max_shift))
+    
+    corr = torch.nn.functional.conv1d(est_chunk.view(1, 1, -1), ref_chunk.view(1, 1, -1)).view(-1)
+    best_lag = torch.argmax(corr).item() - max_shift
+    
+    if best_lag > 0:
+        e, r = est_1d[best_lag:], ref_1d[:len(est_1d)-best_lag]
+    else:
+        e, r = est_1d[:len(ref_1d)-abs(best_lag)], ref_1d[abs(best_lag):]
+    return e.view(1, 1, -1), r.view(1, 1, -1), best_lag
+
+# --- Updated Audio Param Extraction ---
 
 def extract_audio_params(filename):
     """
-    Robustly parses VCTK sample ID and DSP parameters.
-    Handles multi-word loss functions like 'stft_comp'.
+    Supports the new format: pXXX_YYY_micZ_zeta_0.3_M_8_warmup_steps_5_lambda_stft_0.1_lambda_h_0.001_eta_0.8
     """
-    sample_match = re.match(r"(p\d+_\d+)", filename)
+    # Capture pXXX_YYY_micZ
+    sample_match = re.search(r"(p\d+_\d+_mic\d+)", filename)
     sample_id = sample_match.group(1) if sample_match else "unknown"
-
+    
     patterns = {
-        "alpha": r"alpha_([\d.]+)",
         "zeta": r"zeta_([\d.]+)",
-        "warmup_steps": r"warmup_steps_(\d+)",
-        "beta_min": r"beta_min_([\d.]+)",
-        "rec_loss": r"rec_loss_(.+)$", 
+        "M": r"_M_(\d+)",
+        "warmup": r"warmup_steps_(\d+)",
+        "l_stft": r"lambda_stft_([\d.]+)",
+        "l_h": r"lambda_h_([\d.]+)",
+        "eta": r"_eta_([\d.]+)"
     }
     
-    result = {"sample_id": sample_id}
+    res = {"sample_id": sample_id}
+    for k, v in patterns.items():
+        m = re.search(v, filename)
+        if m:
+            val = m.group(1)
+            res[k] = float(val) if '.' in val else int(val)
+    return res
+
+# --- Main Metric Calculation ---
+
+def calculate_all_metrics(recon_path, original_dir, fs=16000):
+    # 1. Load Reconstructed
+    s_est, fs_recon = sf.read(recon_path)
+    est_t = torch.from_numpy(s_est).float()
+    params = extract_audio_params(recon_path.stem)
     
-    for key, pattern in patterns.items():
-        # Using findall in case a parameter (like alpha) appears twice
-        matches = re.findall(pattern, filename)
-        if matches:
-            # Take the last occurrence found in the filename
-            val = matches[-1]
-            
-            if key == "warmup_steps":
-                result[key] = int(val)
-            elif key == "rec_loss":
-                # Try to keep as float if numeric, else string (stft_comp)
-                try:
-                    result[key] = float(val)
-                except ValueError:
-                    result[key] = val
-            else:
-                result[key] = float(val)
-                
-    return result
+    orig_path = original_dir / f"{params['sample_id']}.wav"
+    metrics = {**params}
+    
+    if orig_path.exists():
+        s_ref, _ = sf.read(orig_path)
+        ref_t = torch.from_numpy(s_ref).float()
+        
+        # Alignment for SI-SDR/PESQ/ESTOI
+        e_a, r_a, lag = align_signals_max(est_t, ref_t, int(0.5 * fs))
+        min_l = min(e_a.shape[-1], r_a.shape[-1])
+        e_a, r_a = e_a[..., :min_l], r_a[..., :min_l]
+        
+        # SI-SDR
+        metrics["sisdr"] = round(_sisdr_time_safe(e_a, r_a).item(), 3)
+        
+        # PESQ (Wideband mode 'wb' for 16kHz)
+        metrics["pesq"] = round(pesq(e_a, r_a, fs, mode='wb').item(), 3)
+        
+        # ESTOI (extended=True for ESTOI)
+        metrics["estoi"] = round(stoi(e_a, r_a, fs, extended=True).item(), 3)
+        
+        metrics["delay_sec"] = round(lag / fs, 4)
+    else:
+        metrics.update({"sisdr": -99, "pesq": 0, "estoi": 0, "delay_sec": 0})
 
+    # NISQA (Non-intrusive)
+    s_nisqa = torch.from_numpy(s_est.T).float()
+    if s_nisqa.ndim == 1: s_nisqa = s_nisqa.unsqueeze(0)
+    metrics["nisqa"] = round(nisqa(s_nisqa, fs).mean().item(), 3)
+    
+    return metrics
 
+# --- Execution ---
 
-def nisqa_single(p):
-    s,fs = sf.read(p)
-    batch = torch.tensor(s.T)
+recon_dir = Path('/home/workspace/yoavellinson/buddy_mc/experiments/monaural_testing_gridsearch/test14_04_2026/monaural_dereverberation/VCTK_16k_monaural_res_h_proj_no_eta/reconstructed')
+original_dir = recon_dir.parent / 'original'
 
-    score = nisqa(batch, fs)
-    score_L = score[0][0].item()
-    score_R = score[1][0].item()
-    score_ovrl = (score_L + score_R)*0.5
-    diff = score_L - score_R
-    return {"nisqa_left":round(score_L,3),"nisqa_right":round(score_R,3),"nisqa_ovrl":round(score_ovrl,3),'nisqa_diff':diff}
-
-
-dir = Path('/home/workspace/yoavellinson/buddy_mc/experiments/buddy_grid_search/test05_04_2026/binaural_dereverberation/VCTK_16k_binaural_final_params/reconstructed')
-
-files = list(dir.glob('*.wav'))
-total_files = len(files)
-results = []
-for file in tqdm(files, total=total_files, desc="NISQA Scoring"):
-    p = extract_audio_params(file.stem)
-    nisqa_score = nisqa_single(file) 
-    combined = {**p, **nisqa_score}
-    results.append(combined)
+files = list(recon_dir.glob('*.wav'))
+results = [calculate_all_metrics(f, original_dir) for f in tqdm(files, desc="Calculating Metrics")]
 
 df_raw = pd.DataFrame(results)
-hp_columns = ['zeta', 'alpha', 'warmup_steps', 'beta_min', 'rec_loss']
-metrics = ['nisqa_left', 'nisqa_right', 'nisqa_ovrl','nisqa_diff']
-df_stats = df_raw.groupby(hp_columns)[metrics].agg(['mean', 'std']).reset_index()
-df_stats.columns = [
-    f"{col[0]}_{col[1]}" if col[1] else col[0] 
-    for col in df_stats.columns.values
-]
 
-# Save both raw data and the summary
-df_raw.to_csv(dir.parent / 'nisqa_raw_samples.csv', index=False)
-df_stats.to_csv(dir.parent / 'nisqa_summary_stats.csv', index=False)
+# Summary Stats
+meta = ['sample_id', 'nisqa', 'sisdr', 'pesq', 'estoi', 'delay_sec']
+group_cols = [c for c in df_raw.columns if c not in meta]
+df_stats = df_raw.groupby(group_cols)[['nisqa', 'sisdr', 'pesq', 'estoi']].agg(['mean', 'std']).reset_index()
+df_stats.columns = [c[0] if not c[1] else f"{c[0]}_{c[1]}" for c in df_stats.columns.values]
 
-print("Processing complete. Summary saved to nisqa_summary_stats.csv")
+df_raw.to_csv(recon_dir.parent / 'extended_metrics_raw.csv', index=False)
+df_stats.to_csv(recon_dir.parent / 'extended_metrics_summary.csv', index=False)
 
+print("\nTOP 5 BY PESQ (Perceptual Quality):")
+print(df_stats.sort_values('pesq_mean', ascending=False).head(5))
 
-# --- 1. Top 10 Configurations ---
-top_configs = df_stats.sort_values(
-    by=['nisqa_ovrl_mean', 'nisqa_ovrl_std'], 
-    ascending=[False, True]
-).head(10)
-
-print("\n--- Top 10 Configurations (Overall Quality) ---")
-print(top_configs[['zeta', 'alpha', 'rec_loss', 'nisqa_ovrl_mean', 'nisqa_ovrl_std']])
-
-# --- 2. Binaural Balance Analysis ---
-# A Scatter plot to see how symmetrical the reconstruction is.
-plt.figure(figsize=(8, 8))
-sns.scatterplot(data=df_raw, x='nisqa_left', y='nisqa_right', hue='rec_loss', alpha=0.5)
-
-# Diagonal line represents perfect L/R balance
-max_val = max(df_raw['nisqa_left'].max(), df_raw['nisqa_right'].max())
-min_val = min(df_raw['nisqa_left'].min(), df_raw['nisqa_right'].min())
-plt.plot([min_val, max_val], [min_val, max_val], color='red', linestyle='--', label='Perfect Balance')
-
-plt.title("Binaural Symmetry: Left vs Right NISQA")
-plt.xlabel("NISQA Left")
-plt.ylabel("NISQA Right")
-plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-plt.tight_layout()
-plt.savefig(dir.parent / 'eda_binaural_symmetry.png')
-
-# --- 3. Heatmap: HP Interaction on Quality ---
-# Looking at how Alpha and Zeta interact for your primary loss function
-# (Feel free to filter df_stats by a specific rec_loss if you have many)
-plt.figure(figsize=(10, 6))
-pivot_quality = df_stats.pivot_table(
-    index='alpha', 
-    columns='zeta', 
-    values='nisqa_ovrl_mean'
-)
-sns.heatmap(pivot_quality, annot=True, cmap='YlGnBu', fmt=".3f")
-plt.title("Mean NISQA Overall (Alpha vs Zeta)")
-plt.savefig(dir.parent / 'eda_quality_heatmap.png')
-
-# --- 4. Parallel Coordinates (The "Golden Path") ---
-plt.figure(figsize=(12, 6))
-plot_df = df_stats.copy()
-# Convert rec_loss to numeric codes for plotting
-plot_df['rec_loss_idx'] = plot_df['rec_loss'].astype('category').cat.codes
-# Create 4 quality bins for coloring
-plot_df['quality_rank'] = pd.qcut(plot_df['nisqa_ovrl_mean'], 4, labels=['Low', 'Mid', 'High', 'Best'])
-
-parallel_coordinates(
-    plot_df[['zeta', 'alpha', 'warmup_steps', 'beta_min', 'rec_loss_idx', 'quality_rank']], 
-    'quality_rank', 
-    colormap='viridis',
-    alpha=0.6
-)
-plt.title("HP Paths: Identifying the 'Best' Cluster")
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.savefig(dir.parent / 'eda_parallel_paths.png')
-
-# --- 5. Boxplot: Variance across Top Configs ---
-# This shows if your 'Best' config is consistent across all VCTK samples.
-plt.figure(figsize=(14, 7))
-# Create a readable label for the x-axis
-df_raw['config_label'] = df_raw.apply(
-    lambda x: f"z{x.zeta}_a{x.alpha}_{x.rec_loss}", axis=1
-)
-# Filter raw data to only show the top 10 configs identified earlier
-top_labels = top_configs.apply(
-    lambda x: f"z{x.zeta}_a{x.alpha}_{x.rec_loss}", axis=1
-).tolist()
-df_top_raw = df_raw[df_raw['config_label'].isin(top_labels)]
-
-sns.boxplot(data=df_top_raw, x='config_label', y='nisqa_ovrl', palette="vlag")
-plt.xticks(rotation=45, ha='right')
-plt.title("Score Distribution for Top 10 Configurations")
-plt.tight_layout()
-plt.savefig(dir.parent / 'eda_top_configs_variance.png')
-
-# --- 6. Flagging High-Diff Outliers ---
-# Highlighting configs where the spatial image might be collapsing (drift > 0.4)
-imbalance_threshold = 0.4
-high_diff = df_stats[df_stats['nisqa_diff_mean'].abs() > imbalance_threshold]
-
-if not high_diff.empty:
-    print(f"\n--- WARNING: Configs with High Binaural Imbalance (abs_diff > {imbalance_threshold}) ---")
-    print(high_diff[['zeta', 'alpha', 'rec_loss', 'nisqa_diff_mean', 'nisqa_ovrl_mean']])
-
-print(f"\nEDA Complete. Plots saved to: {dir.parent}")
+print("\nTOP 5 BY SI-SDR (Signal Fidelity):")
+print(df_stats.sort_values('sisdr_mean', ascending=False).head(5))

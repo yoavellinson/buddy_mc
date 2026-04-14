@@ -296,13 +296,13 @@ class BinauralVCTKTestPaired(torch.utils.data.Dataset):
             assert len(data.shape)==1, "wrong number of channels"
 
 
-            segment = self.fix_length(data)
-            self.test_audio.append(segment) 
+
 
             data_rir = self.conv_h(file,file_rir)
-            segment_rir = self.fix_length_2d(data_rir)
-            # segment_rir = self.add_diffuse_noise(segment_rir,5)
-            self.test_rir.append(segment_rir) 
+            segment_rir, shared_idx = self.fix_length_2d(data_rir)
+            self.test_rir.append(segment_rir)
+            segment,_ = self.fix_length(data,shared_idx)
+            self.test_audio.append(segment) 
 
     def add_diffuse_noise(self, signal, snr_db,num_sources=36):
         """
@@ -349,32 +349,67 @@ class BinauralVCTKTestPaired(torch.utils.data.Dataset):
         
         return noisy_signal
         
-    def fix_length_2d(self,segment):
-        #segment: C,T
-        L=len(segment[0,:])
-        #crop or pad to get to the right length
-        if L>self.segment_length:
-            #get random segment
-            idx=np.random.randint(0,L-self.segment_length)
-            segment=segment[:,idx:idx+self.segment_length]
-        elif L<=self.segment_length:
-            pad=np.zeros((2,self.segment_length-L))            
-            segment = np.concatenate((segment,pad),axis=1)
-        return segment
+    # def fix_length_2d(self,segment):
+    #     #segment: C,T
+    #     L=len(segment[0,:])
+    #     #crop or pad to get to the right length
+    #     if L>self.segment_length:
+    #         #get random segment
+    #         idx=np.random.randint(0,L-self.segment_length)
+    #         segment=segment[:,idx:idx+self.segment_length]
+    #     elif L<=self.segment_length:
+    #         pad=np.zeros((2,self.segment_length-L))            
+    #         segment = np.concatenate((segment,pad),axis=1)
+    #     return segment
 
-    def fix_length(self,segment):
-        L=len(segment)
-        #crop or pad to get to the right length
-        if L>self.segment_length:
-            #get random segment
-            idx=np.random.randint(0,L-self.segment_length)
-            segment=segment[idx:idx+self.segment_length]
-        elif L<=self.segment_length:
-            #pad with zeros to get to the right length randomly
-            idx=np.random.randint(0,self.segment_length-L)
-            #copy segment to get to the right length
-            segment=np.pad(segment,(idx,self.segment_length-L-idx),'wrap')            
-        return segment
+    # def fix_length(self,segment):
+    #     L=len(segment)
+    #     #crop or pad to get to the right length
+    #     if L>self.segment_length:
+    #         #get random segment
+    #         idx=np.random.randint(0,L-self.segment_length)
+    #         segment=segment[idx:idx+self.segment_length]
+    #     elif L<=self.segment_length:
+    #         #pad with zeros to get to the right length randomly
+    #         idx=np.random.randint(0,self.segment_length-L)
+    #         #copy segment to get to the right length
+    #         segment=np.pad(segment,(idx,self.segment_length-L-idx),'wrap')            
+    #     return segment
+
+    def fix_length_2d(self, segment, idx=None):
+        # segment: [C, T]
+        C, L = segment.shape
+        
+        if L > self.segment_length:
+            # If no index provided, pick one. Use this same idx for the target!
+            if idx is None:
+                idx = np.random.randint(0, L - self.segment_length)
+            segment = segment[:, idx : idx + self.segment_length]
+        
+        elif L < self.segment_length:
+            # Force static zero padding at the end for both
+            pad_width = self.segment_length - L
+            segment = np.pad(segment, ((0, 0), (0, pad_width)), mode='constant')
+            idx = 0 # Offset is zero in padding mode
+            
+        return segment, idx
+
+    def fix_length(self, segment, idx=None):
+        # segment: [T]
+        L = len(segment)
+        
+        if L > self.segment_length:
+            if idx is None:
+                idx = np.random.randint(0, L - self.segment_length)
+            segment = segment[idx : idx + self.segment_length]
+            
+        elif L < self.segment_length:
+            # Use constant zero padding to match the 2D version
+            pad_width = self.segment_length - L
+            segment = np.pad(segment, (0, pad_width), mode='constant')
+            idx = 0
+            
+        return segment, idx
     
     def conv_h(self,wav_path,h_path):
         wav,fs = sf.read(wav_path)

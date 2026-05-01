@@ -18,25 +18,24 @@ sampling_params:
     sigma_max: 5e-1
     # sigma_max: 8 #use that if no warm initialization
     rho: 10
-  Schurn: 50
+  Schurn: 1
   Snoise: 1
   Stmin: 0
   Stmax: 10
-  order: 1 #order of the sampler (1 or 2)
-  T: 201 #number of discretizatio steprs
+  order: 2 #order of the sampler (1 or 2)
+  T: 80 #number of discretizatio steprs
   schedule: "edm" #"log": log schedule using the parameters in sampling_params
-  warmup_steps: 5
-  M: 8
-  beta_min: 0.4
-  beta_max: 0.99
-  alpha: 0.35
-  lambda_stft: 1
-  eta: 1.0
+  warmup_steps: 50
+  M: 48
+  lambda_sisdr: 0.2
+  alpha: 0.0
+  lambda_stft: 1.0
+  eta: 0.99
+  beta: 0.9
   lambda_h : 1e-3
 
 posterior_sampling:
-
-  zeta: 0.3
+  zeta: 0.25
   rec_loss: 
     name: "l2_comp_stft_summean" #"sisdr"
     weight: 512

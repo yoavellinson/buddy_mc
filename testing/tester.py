@@ -201,23 +201,26 @@ class Tester():
             print("No samples found in test set")
             return
         
-        for i, (original, rir,  filename) in enumerate(tqdm(self.test_set)):
+        for i, (original, rir,  filename,h_orig,hrtf) in enumerate(tqdm(self.test_set)):
             #binaural to mono:
             idx = 0
             rir = rir[idx,:]
-
             seg = torch.from_numpy(original).float().to(self.device)
             seg = self.args.tester.posterior_sampling.warm_initialization.scaling_factor * seg / seg.std() #Normalize the input to match sigma_data of dataset
 
             #read and prepare the RIR
             y=torch.Tensor(rir).to(self.device).unsqueeze(0)
-
-            pred,h = self.sampler.predict_conditional(y) #, operator_blind if blind else operator_ref, shape=(1,seg.shape[-1]), blind=blind)
-            f_name_new = os.path.basename(filename)[: -4]+ f'_zeta_{self.args.tester.posterior_sampling.zeta}'+f'_M_{self.args.tester.sampling_params.M}' +f'_warmup_steps_{self.args.tester.sampling_params.warmup_steps}'+f'_lambda_stft_{self.args.tester.sampling_params.lambda_stft}'+f'_lambda_h_{self.args.tester.sampling_params.lambda_h}'+f'_eta_{self.args.tester.sampling_params.eta}'
+            h_orig = torch.tensor(h_orig.T[idx,:],dtype=y.dtype).to(self.device).unsqueeze(0)
+            hrtf = torch.tensor(hrtf.T[idx,:],dtype=y.dtype).to(self.device).unsqueeze(0)
+            
+            pred,h,y_ = self.sampler.predict_conditional(y,seg) #, operator_blind if blind else operator_ref, shape=(1,seg.shape[-1]), blind=blind)
+            f_name_new = os.path.basename(filename)[: -4]+f'_alpha_{self.args.tester.sampling_params.alpha}' +f'_zeta_{self.args.tester.posterior_sampling.zeta}'+f'_M_{self.args.tester.sampling_params.M}' +f'_w_steps_{self.args.tester.sampling_params.warmup_steps}'+f'_lambda_sisdr_{self.args.tester.sampling_params.lambda_sisdr}'+f'_lambda_stft_{self.args.tester.sampling_params.lambda_stft}'+f'_T_{self.args.tester.sampling_params.T}'+f'_eta_{self.args.tester.sampling_params.eta}'+f'_sigma_max_{self.args.tester.sampling_params.sde_hp.sigma_max}'
             path_original=utils_logging.write_audio_file(seg, self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"original"],stereo=False)
             path_degraded=utils_logging.write_audio_file(y.unsqueeze(0), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"degraded"],stereo=False)
             path_reconstructed=utils_logging.write_audio_file(pred.unsqueeze(0), self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"reconstructed"],stereo=False)
-            path_h=utils_logging.write_audio_file(h.unsqueeze(0), self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"true_rir"],stereo=False)
+            path_h=utils_logging.write_audio_file(h.unsqueeze(0), self.args.exp.sample_rate, 'h_hat_'+f_name_new, path=self.paths[mode+"true_rir"],stereo=False)
+            path_y=utils_logging.write_audio_file(y_.unsqueeze(0), self.args.exp.sample_rate, 'y_hat_'+f_name_new, path=self.paths[mode+"true_rir"],stereo=False)
+            path_h_orig=utils_logging.write_audio_file(h_orig.unsqueeze(0), self.args.exp.sample_rate, 'h_'+f_name_new, path=self.paths[mode+"true_rir"],stereo=False)
 
             # Force Garbage Collection
             import gc

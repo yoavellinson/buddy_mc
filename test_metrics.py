@@ -112,7 +112,7 @@ def calculate_all_metrics(recon_path, original_dir, fs=16000):
 
 # --- Execution ---
 
-recon_dir = Path('/home/workspace/yoavellinson/buddy_mc/experiments/monaural_testing_gridsearch/test14_04_2026/monaural_dereverberation/VCTK_16k_monaural_res_h_proj_no_eta/reconstructed')
+recon_dir = Path('/home/workspace/yoavellinson/buddy_mc/experiments/monaural_testing_gridsearch/test14_04_2026/monaural_dereverberation/VCTK_16k_monaural_sisdr_stft/reconstructed')
 original_dir = recon_dir.parent / 'original'
 
 files = list(recon_dir.glob('*.wav'))

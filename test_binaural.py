@@ -102,31 +102,28 @@ def _main(args):
 # @hydra.main(cons
 @hydra.main(config_path="conf", config_name="conf_VCTK_binaural", version_base=str(hydra.__version__))
 def main(args):
-    # 1. Get the job index from the multirun sweep
-    job_num = HydraConfig.get().job.num
+    # job_num = HydraConfig.get().job.num
     
-    # 2. Unlock the config to add the 'gpu' key if it doesn't exist
-    with open_dict(args):
-        # This cycles 0, 1, 2, 3 based on your 4 GPUs
-        args.gpu = args.get("gpu", job_num % 4)
+    # with open_dict(args):
+    #     # This cycles 0, 1, 2, 3 based on your 4 GPUs
+    #     args.gpu = args.get("gpu", job_num % 4)
     
-    # 3. Set the device globally for this process
-    print(f"Running Job {job_num} on GPU {args.gpu}")    
-    torch.cuda.set_device(args.gpu)
+    # print(f"Running Job {job_num} on GPU {args.gpu}")    
+    # torch.cuda.set_device(args.gpu)
     
     _main(args)
 
 if __name__=="__main__":
-    # import sys
-    # sys.argv.extend([
-    # "--config-name=conf_VCTK_binaural.yaml",
-    # "tester=blind_dereverberation_monaural",
-    # f"tester.checkpoint=/home/workspace/yoavellinson/buddy_mc/ckpt/VCTK_16k_4s_time-190000.pt",
-    # f"model_dir=experiments/monaural_testing_gridsearch",
-    # "+gpu=2",
-    # "dset=vctk_16k_4s_binaural",
-    # "dset.test.num_examples=1",
-    # ])
+    import sys
+    sys.argv.extend([
+    "--config-name=conf_VCTK_binaural.yaml",
+    "tester=blind_dereverberation_monaural",
+    f"tester.checkpoint=/home/workspace/yoavellinson/buddy_mc/ckpt/VCTK_16k_4s_time-190000.pt",
+    f"model_dir=experiments/monaural_testing_gridsearch",
+    "+gpu=1",
+    "dset=vctk_16k_4s_binaural",
+    "dset.test.num_examples=1",
+    ])
     main()
 
 '''
@@ -154,4 +151,14 @@ python test_binaural.py -m \
     tester.sampling_params.alpha=0.5 \
     dset.test.num_examples=20 \
     +gpu=2
+
+
+    python test_binaural.py -m \
+    --config-name=conf_VCTK_binaural.yaml \
+    tester=blind_dereverberation_monaural \
+    tester.checkpoint=/home/workspace/yoavellinson/buddy_mc/ckpt/VCTK_16k_4s_time-190000.pt \
+    model_dir=experiments/monaural_testing_gridsearch \
+    dset=vctk_16k_4s_binaural \
+    tester.sampling_params.warmup_steps=0,10,20,30,40,50 \
+    dset.test.num_examples=1
 '''

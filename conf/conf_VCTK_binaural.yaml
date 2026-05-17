@@ -1,6 +1,6 @@
 defaults:
   - dset: vctk_16k_4s_binaural
-  - network: ncsnpp
+  - network: ncsnpp_binaural
   - diff_params: edm_VCTK
   - tester: only_unconditional
   - exp: VCTK_16k_4s_time

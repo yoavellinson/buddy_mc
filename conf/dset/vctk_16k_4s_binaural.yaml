@@ -23,3 +23,20 @@ test:
   num_examples: 16
   #random seed
   seed: 0
+
+
+# rsync -avP --partial --append-verify --chown=:cycle1_biu_gannot_prj \
+#       /dsi/gannot-lab/gannot-lab1/datasets/VCTK/DS_10283_3443/ \
+#       arcc_slurm_login:/shared/cycle1_biu_gannot_prj/datsets/vctk/
+
+# rsync -avP --partial --append-verify --chown=:cycle1_biu_gannot_prj \
+#       /home/dsi/yoavellinson/binaural_TSE_Gen/sofas/ \
+#       arcc_slurm_login:/shared/cycle1_biu_gannot_prj/datsets/hrtf_db/sofas/
+
+
+
+
+rsync -avP --partial --append-verify --chown=:cycle1_biu_gannot_prj \
+      /home/dsi/yoavellinson/binaural_TSE_Gen/scripts/reverbration_simulator/hrtf_10k_mp/ \
+      arcc_slurm_login:/shared/cycle1_biu_gannot_prj/datsets/hrtf_db/rev_brir/
+

@@ -118,9 +118,8 @@ if __name__=="__main__":
     sys.argv.extend([
     "--config-name=conf_VCTK_binaural.yaml",
     "tester=blind_dereverberation_monaural",
-    f"tester.checkpoint=/home/workspace/yoavellinson/buddy_mc/ckpt/VCTK_16k_4s_time-190000.pt",
-    f"model_dir=experiments/monaural_testing_gridsearch",
-    "+gpu=1",
+    f"tester.checkpoint=/home/users/yoav.ellinson/buddy_mc/experiments_binaural/checkpoints/VCTK_16k_binaural_DPS-520000-520000.pt",
+    f"model_dir=experiments/binaural_testing_informed",
     "dset=vctk_16k_4s_binaural",
     "dset.test.num_examples=1",
     ])

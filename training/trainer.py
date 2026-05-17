@@ -12,6 +12,10 @@ import wandb
 import omegaconf
 from tqdm import tqdm
 
+import signal
+import sys
+import json
+
 from utils.torch_utils import training_stats
 from utils.torch_utils import misc
 import utils.log as utils_logging
@@ -19,14 +23,41 @@ import utils.training_utils as t_utils
 
 #----------------------------------------------------------------------------
 
+# class Trainer():
+#     def __init__(self, args=None, dset=None, network=None, diff_params=None, tester=None, device='cpu'):
 class Trainer():
-    def __init__(self, args=None, dset=None, network=None, diff_params=None, tester=None, device='cpu'):
-
+    def __init__(
+        self,
+        args=None,
+        dset=None,
+        network=None,
+        diff_params=None,
+        tester=None,
+        device='cpu',
+        is_main=True,
+        ddp=False,
+        train_sampler=None,
+    ):
         assert args is not None, "args dictionary is None"
         self.args=args
 
+        self.ckpt_dir = os.path.join(self.args.model_dir, "checkpoints")
+        os.makedirs(self.ckpt_dir, exist_ok=True)
+
+        self.last_time_ckpt = time.time()
+        self.time_ckpt_interval =  4 * 60 * 60  # 4 hours
+        self.received_sigterm = False
+
+        signal.signal(signal.SIGTERM, self.handle_sigterm)
+
+        self.is_main = is_main
+        self.ddp = ddp
+        self.train_sampler = train_sampler
+
+
         assert dset is not None, "dset is None"
         self.dset=dset
+        self.train_iter = iter(self.dset)
 
         assert network is not None, "network is None"
         self.network=network
@@ -37,13 +68,16 @@ class Trainer():
         assert device is not None, "device is None"
         self.device=device
 
+        # self.tester = tester
+        # self.tester.use_wandb = False # We do not want to interfere with the training wandb, as we do the logging in Trainer() and not in Tester()
         self.tester = tester
-        self.tester.use_wandb = False # We do not want to interfere with the training wandb, as we do the logging in Trainer() and not in Tester()
 
+        if self.tester is not None:
+            self.tester.use_wandb = False
+            
         self.optimizer = hydra.utils.instantiate(args.exp.optimizer, params=network.parameters())
         
         self.ema = copy.deepcopy(self.network).eval().requires_grad_(False)
-
         # Torch settings
         torch.manual_seed(self.args.exp.seed)
         torch.backends.cudnn.enabled = True
@@ -63,7 +97,7 @@ class Trainer():
             if self.args.exp.resume_checkpoint != "None":
                 resuming = self.resume_from_checkpoint(checkpoint_path=self.args.exp.resume_checkpoint)
             else:
-                resuming = self.resume_from_checkpoint()
+                resuming = self.resume_latest_if_exists()
             if not resuming:
                 print("Could not resume from checkpoint")
                 print("training from scratch")
@@ -83,12 +117,25 @@ class Trainer():
                 misc.print_module_summary(self.network, [audio, sigma ], max_nesting=2)
 
         # Logger Setup
-        if self.args.logging.log:
+        if self.args.logging.log and self.is_main:
             self.setup_wandb()
             self.setup_logging_variables()
 
         # Profiler
         self.profiler, self.profile, self.profile_total_steps = t_utils.profile(self.args.logging)
+
+
+    def handle_sigterm(self, signum, frame):
+        print("SIGTERM received, saving checkpoint...", flush=True)
+        self.received_sigterm = True
+
+        if self.is_main:
+            self.save_checkpoint(tag="preempt")
+
+        if self.ddp:
+            torch.distributed.destroy_process_group()
+
+        sys.exit(0)
 
     def setup_wandb(self):
         """
@@ -178,20 +225,72 @@ class Trainer():
             'args': self.args,
         }
 
-    def save_checkpoint(self):
-        save_basename = f"{self.args.exp.exp_name}-{self.it}.pt"
-        save_name = f"{self.args.model_dir}/{save_basename}"
-        torch.save(self.state_dict(), save_name)
-        print("saving",save_name)
-        if self.args.logging.remove_old_checkpoints:
-            try:
-                os.remove(self.latest_checkpoint)
-                print("removed last checkpoint", self.latest_checkpoint)
-            except:
-                print("could not remove last checkpoint", self.latest_checkpoint)
-        self.latest_checkpoint=save_name
+    # def save_checkpoint(self):
+    #     save_basename = f"{self.args.exp.exp_name}-{self.it}.pt"
+    #     save_name = f"{self.args.model_dir}/{save_basename}"
+    #     torch.save(self.state_dict(), save_name)
+    #     print("saving",save_name)
+    #     if self.args.logging.remove_old_checkpoints:
+    #         try:
+    #             os.remove(self.latest_checkpoint)
+    #             print("removed last checkpoint", self.latest_checkpoint)
+    #         except:
+    #             print("could not remove last checkpoint", self.latest_checkpoint)
+    #     self.latest_checkpoint=save_name
+    def save_checkpoint(self, tag=None):
+        if not self.is_main:
+            return
 
+        tag = tag or str(self.it)
 
+        net = self.network.module if hasattr(self.network, "module") else self.network
+
+        ckpt = {
+            "it": self.it,
+            "network": net.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "ema": self.ema.state_dict(),
+            "args": self.args,
+        }
+
+        ckpt_name = f"{self.args.exp.exp_name}-{tag}-{self.it}.pt"
+        ckpt_path = os.path.join(self.ckpt_dir, ckpt_name)
+        tmp_path = ckpt_path + ".tmp"
+
+        torch.save(ckpt, tmp_path)
+        os.replace(tmp_path, ckpt_path)
+
+        latest = {
+            "checkpoint": ckpt_path,
+            "iteration": self.it,
+            "time": time.time(),
+        }
+
+        latest_path = os.path.join(self.ckpt_dir, "latest.json")
+        latest_tmp = latest_path + ".tmp"
+
+        with open(latest_tmp, "w") as f:
+            json.dump(latest, f, indent=2)
+
+        os.replace(latest_tmp, latest_path)
+
+        self.latest_checkpoint = ckpt_path
+        print(f"Saved checkpoint: {ckpt_path}", flush=True)
+        
+    def resume_latest_if_exists(self):
+        latest_path = os.path.join(self.ckpt_dir, "latest.json")
+
+        if not os.path.exists(latest_path):
+            return False
+
+        with open(latest_path, "r") as f:
+            latest = json.load(f)
+
+        ckpt_path = latest["checkpoint"]
+        print(f"Resuming from latest checkpoint: {ckpt_path}", flush=True)
+
+        return self.resume_from_checkpoint(checkpoint_path=ckpt_path)
+    
     def process_loss_for_logging(self, error: torch.Tensor, sigma: torch.Tensor):
         """
         This function is used to process the loss for logging. It is used to group the losses by the values of sigma and report them using training_stats.
@@ -218,11 +317,21 @@ class Trainer():
                 idx = np.where(mask==True)[0][0]
                 training_stats.report('error_sigma_'+str(self.sigma_bins[i]),error[idx].mean())
 
+    # def get_batch(self):
+    #     ''' Get an audio example from dset and apply the transform (spectrogram + compression)'''
+    #     sample = next(self.dset).to(self.device)
+    #     return sample
     def get_batch(self):
-        ''' Get an audio example from dset and apply the transform (spectrogram + compression)'''
-        sample = next(self.dset).to(self.device)
-        return sample
+        try:
+            sample = next(self.train_iter)
+        except StopIteration:
+            if getattr(self, "train_sampler", None) is not None:
+                self.train_sampler.set_epoch(self.it)
+            self.train_iter = iter(self.dset)
+            sample = next(self.train_iter)
 
+        return sample.to(self.device, non_blocking=True)
+    
     def train_step(self):
         '''Training step'''
         self.optimizer.zero_grad()
@@ -240,7 +349,7 @@ class Trainer():
         # Update weights.
         self.optimizer.step()
 
-        if self.args.logging.log:
+        if self.args.logging.log and self.is_main:
             self.process_loss_for_logging(error, sigma)
 
     def update_ema(self):
@@ -308,7 +417,7 @@ class Trainer():
             self.train_step()
             self.update_ema()
             
-            if self.profile and self.args.logging.log:
+            if self.is_main and self.profile and self.args.logging.log and wandb.run is not None:
                 if self.it < self.profile_total_steps:
                     self.profiler.step()
                 elif self.it == self.profile_total_steps +1:
@@ -320,14 +429,19 @@ class Trainer():
                 elif self.it > self.profile_total_steps +1:
                     self.profile = False
 
-            if self.it>0 and self.it%self.args.logging.save_interval==0 and self.args.logging.save_model:
+            if self.is_main and self.it>0 and self.it%self.args.logging.save_interval==0 and self.args.logging.save_model:
                 self.save_checkpoint()
 
-            if self.it>0 and self.it%self.args.logging.heavy_log_interval==0 and self.args.logging.log:
+            if self.is_main and self.it>0 and self.it%self.args.logging.heavy_log_interval==0 and self.args.logging.log:
                 self.heavy_logging()
 
-            if self.it>0 and self.it%self.args.logging.log_interval==0 and self.args.logging.log:
+            if self.is_main and self.it>0 and self.it%self.args.logging.log_interval==0 and self.args.logging.log:
                 self.easy_logging()
+            now = time.time()
+
+            if self.is_main and (now - self.last_time_ckpt) >= self.time_ckpt_interval:
+                self.save_checkpoint(tag="time")
+                self.last_time_ckpt = now
 
             pbar.update(1)
             # Update state.
@@ -337,5 +451,6 @@ class Trainer():
                     break
             except:
                 pass
+
         pbar.close()
     #----------------------------------------------------------------------------

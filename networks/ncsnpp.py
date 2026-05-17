@@ -492,7 +492,7 @@ class NCSNppTime(NCSNpp):
         return sig[..., :length]
 
     def forward(self, x, time_cond=None):
-
+        x = x.squeeze()
         B,C,T=x.shape
 
         x_spec=self.stft(x)
@@ -511,7 +511,6 @@ class mNCSNppTime(NCSNpp):
         super().__init__( 
         **kwargs)
         self.stft_kwargs = stft
-
         self.window = get_window("hann", self.stft_kwargs.n_fft)
 
 
@@ -520,7 +519,7 @@ class mNCSNppTime(NCSNpp):
         C=sig.shape[1]
         sig=einops.rearrange(sig, "b c t -> (b c) t")   
         # spec= torch.stft(sig, **{**self.stft_kwargs, "window": window}, return_complex=True)
-        spec= torch.stft(sig, **{**vars(self.stft_kwargs), "window": window}, return_complex=True)
+        spec= torch.stft(sig, **{**self.stft_kwargs, "window": window}, return_complex=True)
         spec=einops.rearrange(spec, "(b c) f t -> b c f t", c=C)
         #pad in the time axis if the resulting spec is not a multiple of 16
         N_pad = 16 
@@ -535,19 +534,18 @@ class mNCSNppTime(NCSNpp):
         window = self.window.to(spec.device)
         c=spec.shape[1]
         spec=einops.rearrange(spec, "b c f t -> (b c) f t")
+        sig= torch.istft(spec, **{**self.stft_kwargs, "window": window}, length=length)
         # sig= torch.istft(spec, **{**self.stft_kwargs, "window": window}, length=length)
-        sig= torch.istft(spec, **{**vars(self.stft_kwargs), "window": window}, length=length)
         sig=einops.rearrange(sig, "(b c) t -> b c t", c=c)
         return sig[..., :length]
 
     def forward(self, x, time_cond=None):
-
+        x = x.squeeze()
         B,C,T=x.shape
 
         x_spec=self.stft(x)
         x_spec=super().forward(x_spec, time_cond=time_cond)
         x_time=self.istft(x_spec, length=T)
-
         return x_time
 
 

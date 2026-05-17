@@ -1,7 +1,7 @@
 from datetime import date
 import re
 import torch
-import torchaudio
+# import torchaudio
 import os
 import numpy as np
 import wandb
@@ -171,7 +171,7 @@ class Tester():
             print("No samples found in test set")
             return
         
-        for i, (original, rir,  filename) in enumerate(tqdm(self.test_set)):
+        for i, (original, rir, filename,h_orig,hrtf) in enumerate(tqdm(self.test_set)):
 
             seg = torch.from_numpy(original).float().to(self.device)
             seg = self.args.tester.posterior_sampling.warm_initialization.scaling_factor * seg / seg.std() #Normalize the input to match sigma_data of dataset
@@ -179,7 +179,7 @@ class Tester():
             #read and prepare the RIR
             y=torch.Tensor(rir).to(self.device)
 
-            pred,h = self.sampler.predict_conditional(y) #, operator_blind if blind else operator_ref, shape=(1,seg.shape[-1]), blind=blind)
+            pred = self.sampler.predict_conditional(y,h_orig=h_orig) #, operator_blind if blind else operator_ref, shape=(1,seg.shape[-1]), blind=blind)
             f_name_new = os.path.basename(filename)[: -4]+f'_alpha_{self.args.tester.sampling_params.alpha}' +f'_zeta_{self.args.tester.posterior_sampling.zeta}'+f'_alpha_{self.args.tester.sampling_params.alpha}' +f'_warmup_steps_{self.args.tester.sampling_params.warmup_steps}'+f'_beta_min_{self.args.tester.sampling_params.beta_min}'
             path_original=utils_logging.write_audio_file(seg, self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"original"],stereo=False)
             path_degraded=utils_logging.write_audio_file(y.unsqueeze(0), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"degraded"],stereo=True)

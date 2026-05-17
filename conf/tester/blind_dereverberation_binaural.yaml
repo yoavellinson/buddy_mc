@@ -6,7 +6,7 @@ tester:
 sampler:
   _target_: 'testing.MonauralEulerHeunSamplerDPS.MonauralEulerHeunSamplerDPS'
 
-modes: ["monaural_dereverberation"] #modes to test binaural_dereverberation
+modes: ["binaural_dereverberation"] #modes to test 
 
 checkpoint: None
 

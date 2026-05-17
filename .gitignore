@@ -5,5 +5,6 @@ ckpt
 **/__pycache__
 **/**/__pycache__
 wandb_key.py
-/home/users/yoav.ellinson/buddy_mc/experiments
-/home/users/yoav.ellinson/buddy_mc/experiments
+experiments*
+checkpoints/*
+experiments_binaural/*

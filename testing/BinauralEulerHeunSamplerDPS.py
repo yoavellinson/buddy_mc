@@ -384,23 +384,78 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
         y_final = y_final / (torch.max(torch.abs(y_final)) + 1e-8)
         return y_final,h_tilde_wav
     
+        def get_likelihood_score_h_orig(self, x_den, x, h_orig,i):
+        y_hat = self.conv_h(x_den,h_orig)
+        Y_hat = self.stft(y_hat)
+        rec = self.lambda_sisdr*self.rec_loss_sisdr(y_hat,self.y)
+        rec += self.lambda_stft*self.rec_loss_stft(Y_hat,self.Y.permute(2,1,0))
+        rec_grads = torch.autograd.grad(outputs=rec, inputs=x)[0]
+        normguide = torch.norm(rec_grads)/(self.args.exp.audio_len**0.5)
+        return self.zeta / (normguide+1e-8) * rec_grads, rec
+
+    def stepEM_h_orig(self, x_i, t_i, t_iplus1, gamma_i,i,h_orig, eps=1e-5):
+        x_hat, t_hat = self.stochastic_timestep(x_i, t_i, gamma_i)
+        x_hat = x_hat.detach().requires_grad_(True)
+        
+        #E step - Denoise using posterior sampleing
+        x_den = self.get_Tweedie_estimate(x_hat, t_hat) #\hat{x_0}
+        if self.args.tester.posterior_sampling.constraint_speech_magnitude.use:
+            s_scale = self.args.tester.posterior_sampling.constraint_speech_magnitude.speech_scaling
+            x_den = x_den * (s_scale / (x_den.detach().std() + 1e-8))
+                
+        lh_score, rec_loss_value = self.get_likelihood_score_h_orig(x_den, x_hat, h_orig,i)
+        x_hat_ng = x_hat.detach()
+        score = self.Tweedie2score(x_den, x_hat_ng, t_hat)
+
+        ode_integrand = self.diff_params._ode_integrand(x_hat_ng, t_hat, score) + lh_score
+        dt = t_iplus1 - t_hat
+
+        x_iplus1 = x_hat_ng + dt * ode_integrand
+
+        return x_iplus1.detach_(), x_den.detach(),rec_loss_value
+
+    def predict_h_orig(
+        self,
+        shape, 
+        device,
+        h_orig
+        ):
+        self.reset_buffers()
+        # get the noise schedule
+        t = self.create_schedule().to(device)
+        # sample prior
+        x = self.initialize_x(shape,device, t)
+
+        # parameter for langevin stochasticity, if Schurn is 0, gamma will be 0 to, so the sampler will be deterministic
+        gamma = self.get_gamma(t).to(device)
+        pbar = tqdm(range(0, self.T, 1))
+
+        for i in pbar:
+            self.step_counter=i
+            x, x_den,rec_loss_value = self.stepEM_h_orig(x, t[i] , t[i+1], gamma[i],i,h_orig)
+            pbar.set_postfix({
+               "rec": f"{rec_loss_value.item():.4f}"})
+        return x_den
+
     def predict_unconditional(self, *args, **kwargs):
         raise ValueError("DPS not made for unconditional sampling")
 
     def predict_conditional(
         self,
         y,  #observations 
+        h_orig=None,
         shape=None,
         blind=False,
         **kwargs
     ):
-
         self.y = y
-
         if shape is None:
             shape = y.shape
-        return self.predict(shape, y.device, blind)
+        x_den = self.predict_h_orig(shape, y.device, h_orig)
+        return x_den
 
+
+    
 
 class CompressedSTFTLoss(nn.Module):
     """

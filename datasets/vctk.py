@@ -7,6 +7,8 @@ import soundfile as sf
 import pandas as pd
 from pathlib import Path
 from scipy import signal
+import torch.distributed as dist
+from torch.utils.data import get_worker_info
 
 class VCTKTrain(torch.utils.data.IterableDataset):
     def __init__(self,
@@ -240,7 +242,8 @@ class BinauralVCTKTestPaired(torch.utils.data.Dataset):
         seed=0,
         num_examples=8,
         shuffle=True,
-        rir_df_path ='/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_test_VAE_wsj0_1k_mp.csv',
+        rir_df_path ='/shared/cycle1_biu_gannot_prj/datsets/hrtf_db/csvs/HRTF_train_VAE_wsj0_10k_mp_clean.csv',
+        sofa_root_path ='/shared/cycle1_biu_gannot_prj/datsets/hrtf_db/hrtf_10k_mp'
         ):
         super().__init__()
         random.seed(seed)
@@ -250,6 +253,7 @@ class BinauralVCTKTestPaired(torch.utils.data.Dataset):
         self.test_samples=[]
         self.rir_samples=[]
         self.hrtf_samples=[]
+        self.sofa_root_path = sofa_root_path
 
         #iterate over speakers directories
         speakers=os.listdir(path)
@@ -263,8 +267,8 @@ class BinauralVCTKTestPaired(torch.utils.data.Dataset):
                     rir_exists= False
                     while not rir_exists:
                         line = self.rir_df.sample(n=1, replace=True)
-                        rir_path = line['hrir_rev_1_path'].item()
-                        hrtf_path = line['hrir_zero_1_path'].item()
+                        rir_path = self.get_path(line['hrir_rev_1_path'].item())
+                        hrtf_path = self.get_path(line['hrir_zero_1_path'].item())
                         rir_exists = Path(rir_path).exists() and Path(hrtf_path).exists()
                     self.hrtf_samples.append(hrtf_path)
                     self.rir_samples.append(rir_path)
@@ -312,7 +316,21 @@ class BinauralVCTKTestPaired(torch.utils.data.Dataset):
             hrtf, samplerate = sf.read(file_hrtf)
             self.test_hrtf.append(hrtf)
             
+    def get_path(self, org_path):
+        org_path = Path(org_path)
+        new_root = Path(self.sofa_root_path)
+        try:
+            idx = org_path.parts.index("hrtf_10k_mp")
+            relative = Path(*org_path.parts[idx:])  # sofas/...
+        except ValueError:
+            raise ValueError(f"'sofas' not found in path: {org_path}")
 
+        new_path = new_root.parent / relative
+        if new_path.exists():
+            return new_path
+
+        else:
+            return None
 
     def fix_length_2d(self, segment, idx=None):
         # segment: [C, T]
@@ -363,13 +381,209 @@ class BinauralVCTKTestPaired(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.test_samples)
     
+class BinauralVCTKTrain(torch.utils.data.IterableDataset):
+    def __init__(self,
+        fs=16000,
+        segment_length=65536,
+        path="", #path to the dataset
+        speakers_discard=[], #list of speakers to discard
+        speakers_test=[], #list of speakers to use for testing, discarded here
+        normalize=False,  #to normalize or not. I don't normalize by default
+        seed=0,
+        shuffle=True,
+        rir_df_path ='/shared/cycle1_biu_gannot_prj/datsets/hrtf_db/csvs/HRTF_train_VAE_wsj0_10k_mp_clean.csv',
+        sofa_root_path ='/shared/cycle1_biu_gannot_prj/datsets/hrtf_db/hrtf_10k_mp'
+        ):
+        super().__init__()
+        random.seed(seed)
+        np.random.seed(seed)
+        self.rir_df = pd.read_csv(rir_df_path)
+        self.rir_df = self.rir_df[self.rir_df['rt_60'].between(1.2, 1.9)] #high rev for testing only
+        self.train_samples=[]
+        self.hrtf_samples=[]
+        self.sofa_root_path = sofa_root_path
+
+        #iterate over speakers directories
+        speakers=os.listdir(path)
+        for s in speakers:
+            if s in speakers_discard:
+                continue
+            new_samples=glob.glob(os.path.join(path,s,"*.wav"))
+            self.train_samples.extend(new_samples)
+            for file in new_samples:
+                rir_exists= False
+                while not rir_exists:
+                    line = self.rir_df.sample(n=1, replace=True)
+                    hrtf_path = self.get_path(line['hrir_zero_1_path'].item())
+                    rir_exists = Path(hrtf_path).exists()
+                self.hrtf_samples.append(hrtf_path)
+            else:
+                continue
+            
+        self.segment_length=int(segment_length)
+        self.fs=fs
+
+        self.normalize=normalize
+        if self.normalize:
+            raise NotImplementedError("normalization not implemented yet")
+            
+    def get_path(self, org_path):
+        org_path = Path(org_path)
+        new_root = Path(self.sofa_root_path)
+        try:
+            idx = org_path.parts.index("hrtf_10k_mp")
+            relative = Path(*org_path.parts[idx:])  # sofas/...
+        except ValueError:
+            raise ValueError(f"'sofas' not found in path: {org_path}")
+
+        new_path = new_root.parent / relative
+        if new_path.exists():
+            return new_path
+
+        else:
+            return None
+
+    def fix_length_2d(self, segment, idx=None):
+        # segment: [C, T]
+        C, L = segment.shape
+        
+        if L > self.segment_length:
+            # If no index provided, pick one. Use this same idx for the target!
+            if idx is None:
+                idx = np.random.randint(0, L - self.segment_length)
+            segment = segment[:, idx : idx + self.segment_length]
+        
+        elif L < self.segment_length:
+            # Force static zero padding at the end for both
+            pad_width = self.segment_length - L
+            segment = np.pad(segment, ((0, 0), (0, pad_width)), mode='constant')
+            idx = 0 # Offset is zero in padding mode
+            
+        return segment, idx
+
+    def fix_length(self, segment, idx=None):
+        # segment: [T]
+        L = len(segment)
+        
+        if L > self.segment_length:
+            if idx is None:
+                idx = np.random.randint(0, L - self.segment_length)
+            segment = segment[idx : idx + self.segment_length]
+            
+        elif L < self.segment_length:
+            # Use constant zero padding to match the 2D version
+            pad_width = self.segment_length - L
+            segment = np.pad(segment, (0, pad_width), mode='constant')
+            idx = 0
+            
+        return segment, idx
+    
+    def conv_h(self,wav_path,h_path):
+        wav,fs = sf.read(wav_path)
+        h,fs = sf.read(h_path)
+        rend_L = signal.fftconvolve(wav,h[:,0])
+        rend_R = signal.fftconvolve(wav,h[:,1])
+        stereo_audio_h = np.concatenate((rend_L[:,np.newaxis],rend_R[:,np.newaxis]),axis=1)
+        return stereo_audio_h.T
+
+    def __len__(self):
+        return len(self.train_samples)
+    
+
+    # def __iter__(self):
+    #     while True:
+    #         num=random.randint(0,len(self.train_samples)-1)
+    #         file=self.train_samples[num]
+    #         hrtf = self.hrtf_samples[num]
+    #         data = self.conv_h(file,hrtf)
+    #         segment=data
+    #         #Stereo to mono
+    #         C,L=segment.shape
+    #         #crop or pad to get to the right length
+    #         if L>self.segment_length:
+    #             #get random segment
+    #             idx=np.random.randint(0,L-self.segment_length)
+    #             segment=segment[:,idx:idx+self.segment_length]
+    #         elif L<=self.segment_length:
+    #             pad_total = self.segment_length - L
+    #             idx = np.random.randint(0, pad_total + 1)
+    #             segment = np.pad(
+    #                 segment,
+    #                 pad_width=((0, 0), (idx, pad_total - idx)),
+    #                 mode="constant",
+    #                 constant_values=0,
+    #             )
+    #         yield  segment
+
+    def __iter__(self):
+        worker = get_worker_info()
+        worker_id = worker.id if worker is not None else 0
+
+        if dist.is_available() and dist.is_initialized():
+            rank = dist.get_rank()
+        else:
+            rank = 0
+
+        base_seed = torch.initial_seed() % (2**32)
+        seed = base_seed + 1000 * rank + worker_id
+
+        py_rng = random.Random(seed)
+        np_rng = np.random.default_rng(seed)
+
+        while True:
+            num = py_rng.randint(0, len(self.train_samples) - 1)
+
+            file = self.train_samples[num]
+            hrtf = self.hrtf_samples[num]
+
+            segment = self.conv_h(file, hrtf)  # (C, L)
+
+            C, L = segment.shape
+
+            if L > self.segment_length:
+                idx = np_rng.integers(0, L - self.segment_length + 1)
+                segment = segment[:, idx:idx + self.segment_length]
+
+            elif L < self.segment_length:
+                pad_total = self.segment_length - L
+                idx = np_rng.integers(0, pad_total + 1)
+
+                segment = np.pad(
+                    segment,
+                    pad_width=((0, 0), (idx, pad_total - idx)),
+                    mode="constant",
+                    constant_values=0,
+                )
+
+            yield torch.from_numpy(segment).float()
 
 if __name__ =="__main__":
     segment_length= 65536
     fs= 16000
-    path='/dsi/gannot-lab/gannot-lab1/datasets/VCTK/DS_10283_3443/VCTK-Corpus-0.92/wav16k'
+    path='/shared/cycle1_biu_gannot_prj/datsets/vctk/VCTK-Corpus-0.92/wav16k'
     speakers_discard= ["p280", "p315"]
     speakers_test= ["p226", "p287"]
     normalize= False
     num_examples= 16
-    ds = BinauralVCTKTestPaired(fs=fs,segment_length=segment_length,path=path,speakers_discard=speakers_discard,speakers_test=speakers_test,normalize=normalize,num_examples=num_examples)
+    ds = BinauralVCTKTrain(fs=fs,segment_length=segment_length,path=path,speakers_discard=speakers_discard,speakers_test=speakers_test,normalize=normalize)
+    for d in ds:
+        print(d.shape) #C,L (2,65536)
+        break
+
+'''
+
+srun --partition=sandbox \
+     --container-image=docker://cr.me-west1.nebius.cloud#i00d60vg8wj9bggce3:diffusion_train \
+     --gres=gpu:1 --qos=sandbox_owner_90 --time=02:00:00 nvidia-smi
+    
+     
+
+srun --partition=sandbox \
+  --container-image=docker://cr.me-west1.nebius.cloud#i00d60vg8wj9bggce3/diffusion_train:v1 \
+  --gres=gpu:1 \
+  --qos=sandbox_owner_90 \
+  --time=02:00:00 \
+  --container-mounts=/home/users/$USER:/home/users/$USER,/shared/cycle1_biu_gannot_prj:/shared/cycle1_biu_gannot_prj \
+  --pty /bin/bash
+
+'''

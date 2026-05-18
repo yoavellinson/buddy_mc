@@ -17,7 +17,13 @@ from testing.operators.reverb import RIROperator
 
 import utils.log as utils_logging
 import utils.training_utils as tr_utils
-
+from collections import OrderedDict
+def strip_module_prefix(sd):
+    return OrderedDict(
+        (k.removeprefix("module."), v)
+        for k, v in sd.items()
+    )
+    
 class Tester():
     def __init__(
         self, args, network, diff_params, test_set=None, device=None, in_training=False,
@@ -57,14 +63,39 @@ class Tester():
         except (FileNotFoundError, ValueError):
             raise ValueError("No checkpoint found")
 
+    # def load_checkpoint(self, path):
+    #     state_dict = torch.load(path, map_location=self.device,weights_only=False)
+    #     try:
+    #         self.it=state_dict['it']
+    #     except:
+    #         self.it=0
+    #     print("loading checkpoint")
+    #     return tr_utils.load_state_dict(state_dict, ema=self.network)
+
+
     def load_checkpoint(self, path):
-        state_dict = torch.load(path, map_location=self.device,weights_only=False)
         try:
-            self.it=state_dict['it']
-        except:
-            self.it=0
-        print("loading checkpoint")
-        return tr_utils.load_state_dict(state_dict, ema=self.network)
+            state_dict = torch.load(path, map_location=self.device, weights_only=False)
+
+            self.it = state_dict.get("it", 0)
+
+            print("loading checkpoint")
+
+            if "network" in state_dict:
+                state_dict["network"] = strip_module_prefix(state_dict["network"])
+
+            if "ema" in state_dict:
+                state_dict["ema"] = strip_module_prefix(state_dict["ema"])
+
+            return tr_utils.load_state_dict(state_dict, ema=self.network)
+        
+        except Exception as e:
+            print(f"Could not load checkpoint: {type(e).__name__}: {e}")
+
+            print("Using random model weights.")
+            self.it = 0
+            return self.network
+
 
     def load_checkpoint_legacy(self, path):
         state_dict = torch.load(path, map_location=self.device)
@@ -178,13 +209,13 @@ class Tester():
 
             #read and prepare the RIR
             y=torch.Tensor(rir).to(self.device)
-
+            h_orig = torch.Tensor(h_orig).to(self.device)
             pred = self.sampler.predict_conditional(y,h_orig=h_orig) #, operator_blind if blind else operator_ref, shape=(1,seg.shape[-1]), blind=blind)
-            f_name_new = os.path.basename(filename)[: -4]+f'_alpha_{self.args.tester.sampling_params.alpha}' +f'_zeta_{self.args.tester.posterior_sampling.zeta}'+f'_alpha_{self.args.tester.sampling_params.alpha}' +f'_warmup_steps_{self.args.tester.sampling_params.warmup_steps}'+f'_beta_min_{self.args.tester.sampling_params.beta_min}'
+            f_name_new = os.path.basename(filename)[: -4]+f'_zeta_{self.args.tester.posterior_sampling.zeta}'+f'_h_orig'
             path_original=utils_logging.write_audio_file(seg, self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"original"],stereo=False)
             path_degraded=utils_logging.write_audio_file(y.unsqueeze(0), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"degraded"],stereo=True)
-            path_reconstructed=utils_logging.write_audio_file(pred.unsqueeze(0), self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"reconstructed"],stereo=True)
-            path_h=utils_logging.write_audio_file(h.unsqueeze(0), self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"true_rir"],stereo=True)
+            path_reconstructed=utils_logging.write_audio_file(pred, self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"reconstructed"],stereo=True)
+            # path_h=utils_logging.write_audio_file(h.unsqueeze(0), self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"true_rir"],stereo=True)
 
             # Force Garbage Collection
             import gc

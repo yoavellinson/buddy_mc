@@ -12,6 +12,7 @@ from utils.losses import get_loss
 import torch.nn as nn
 from testing.EulerHeunSampler import EulerHeunSampler
 import torchaudio.functional as F_audio
+import torch.nn.functional as F
 
 class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
     """
@@ -23,16 +24,20 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
         super().__init__(model, diff_params, args)
         self.zeta = self.args.tester.posterior_sampling.zeta
         self.stft_options = dict(size=510, shift=128)
-        self.rec_loss = SiSDRLoss() if args.tester.posterior_sampling.rec_loss.name =='sisdr' else CompressedSTFTLoss() #L2ComplexSTFTSumMean()
+        self.rec_loss_sisdr = SiSDRLoss() 
+        self.rec_loss_stft = CompressedSTFTLoss()
         self.warmup_steps = self.args.tester.sampling_params.warmup_steps
         self.M = self.args.tester.sampling_params.M
         self.alpha = self.args.tester.sampling_params.alpha
-        self.beta_min = self.args.tester.sampling_params.beta_min
-        self.beta_max = self.args.tester.sampling_params.beta_max
+        # self.beta_min = self.args.tester.sampling_params.beta_min
+        # self.beta_max = self.args.tester.sampling_params.beta_max
+        self.lambda_stft = self.args.tester.sampling_params.lambda_stft
+        self.lambda_sisdr = self.args.tester.sampling_params.lambda_sisdr
 
     def initialize_x(self, shape, device, schedule):
         Y = self.stft(self.y)
-        self.Y = Y.permute(2,1,0)
+        Y = Y.squeeze().permute(2,1,0)
+        self.Y = Y
         if self.args.tester.posterior_sampling.warm_initialization.mode == "none":
             x = schedule[0]*torch.randn(shape).to(device)
 
@@ -95,6 +100,9 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
             stft_signal: [J, F, T] - Complex STFT (e.g., [2, 257, 1031])
         """
         # 1. Extract Options
+        B,C,T = time_signal.shape
+
+        time_signal = time_signal.reshape(B*C,T)
         n_fft = self.stft_options['size']
         hop_length = self.stft_options['shift']
         win_length = n_fft # Standard for perfect reconstruction
@@ -116,8 +124,8 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
             onesided=True,
             return_complex=True
         )
-        
-        return stft_signal
+        _,F,T = stft_signal.shape
+        return stft_signal.reshape(B,C,F,T)
     
     def istft(self, stft_signal, length=None):
         """
@@ -383,8 +391,63 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
         # Global normalization (preserves the L/R ratio)
         y_final = y_final / (torch.max(torch.abs(y_final)) + 1e-8)
         return y_final,h_tilde_wav
-    
-        def get_likelihood_score_h_orig(self, x_den, x, h_orig,i):
+
+    def conv_h(self, wav, h):
+        """
+        Binaural-to-binaural convolution.
+
+        Args:
+            wav: torch.Tensor
+                Shape [2, T], [1, 2, T], or [T, 2]
+            h: np array
+                Shape [2, L], [L, 2], [1, 2, L], or [1, L, 2]
+
+        Returns:
+            torch.Tensor
+                Shape [2, T]
+        """
+
+        wav = wav.squeeze()
+        h = torch.from_numpy(h.squeeze())
+
+        # wav -> [2, T]
+        if wav.ndim != 2:
+            raise ValueError(f"Expected wav to be 2D after squeeze, got {wav.shape}")
+
+        if wav.shape[0] == 2:
+            pass
+        elif wav.shape[1] == 2:
+            wav = wav.T
+        else:
+            raise ValueError(f"Expected wav to have 2 channels, got {wav.shape}")
+
+        # h -> [2, L]
+        if h.ndim != 2:
+            raise ValueError(f"Expected h to be 2D after squeeze, got {h.shape}")
+
+        if h.shape[0] == 2:
+            pass
+        elif h.shape[1] == 2:
+            h = h.T
+        else:
+            raise ValueError(f"Expected h to have 2 channels, got {h.shape}")
+
+        T = wav.shape[-1]
+        L = h.shape[-1]
+
+        # grouped conv:
+        # input  [1, 2, T]
+        # weight [2, 1, L]
+        # groups=2 => left*left_rir, right*right_rir
+        wav = wav[None, :, :]
+        h = h.flip(-1)[:, None, :].to(device=wav.device,dtype=wav.dtype)
+
+        pad = L - 1
+        out = F.conv1d(F.pad(wav, (pad, pad)), h, groups=2)
+
+        return out.squeeze(0)[:, :T]
+        
+    def get_likelihood_score_h_orig(self, x_den, x, h_orig,i):
         y_hat = self.conv_h(x_den,h_orig)
         Y_hat = self.stft(y_hat)
         rec = self.lambda_sisdr*self.rec_loss_sisdr(y_hat,self.y)
@@ -447,7 +510,9 @@ class BinauralEulerHeunSamplerDPS(EulerHeunSampler):
         shape=None,
         blind=False,
         **kwargs
-    ):
+    ):  
+        if len(y.shape)==2:
+            y = y.unsqueeze(0)
         self.y = y
         if shape is None:
             shape = y.shape

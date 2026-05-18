@@ -1,6 +1,6 @@
 exp_name: "VCTK_16k_binaural_DPS" #name of the experiment
 
-model_dir: experiments #directory where the model will be saved locally
+model_dir: experiments_binaural_to_mono #directory where the model will be saved locally
 
 trainer:
   _target_: "training.trainer.Trainer"
@@ -16,8 +16,8 @@ lr_rampup_it: 10000
 scheduler_step_size: 60000
 scheduler_gamma: 0.8
 
-batch_size: 32
-max_iters: 2000000
+batch_size: 1
+max_iters: 20
 num_workers: 4
 seed: 1
 

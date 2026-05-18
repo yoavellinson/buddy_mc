@@ -31,5 +31,5 @@ stft:
 #log_feature_stats_interval: 1000000
 
 wandb:
-  entity: "eloimoliner"
+  entity: "yoavellinson"
   project: "audiodps"

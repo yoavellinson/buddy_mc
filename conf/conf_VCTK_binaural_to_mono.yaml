@@ -1,0 +1,10 @@
+defaults:
+  - dset: vctk_16k_4s_binaural
+  - network: ncsnpp_binaural_to_mono
+  - diff_params: edm_VCTK
+  - tester: blind_dereverberation_binaural
+  - exp: VCTK_16k_4s_time
+  - logging: base_logging
+  - override hydra/launcher: joblib
+  - _self_  # Keeps your other config settings below
+model_dir: "experiments_binaural_to_mono"

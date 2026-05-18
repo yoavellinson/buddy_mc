@@ -8,3 +8,4 @@ wandb_key.py
 experiments*
 checkpoints/*
 experiments_binaural/*
+.vscode/*

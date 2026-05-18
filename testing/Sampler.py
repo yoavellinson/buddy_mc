@@ -67,10 +67,13 @@ class Sampler():
     def Tweedie2score(self, tweedie, xt, t):
         return self.diff_params.Tweedie2score(tweedie, xt, t)
 
-    def get_Tweedie_estimate(self, x, t_i):
-        x_hat = self.diff_params.denoiser(x.unsqueeze(1), self.model, t_i).squeeze(1)
-        return x_hat
 
+    def get_Tweedie_estimate(self, x, t_i):
+        if x.ndim == 2:
+            x = x.unsqueeze(1)
+        x_hat = self.diff_params.denoiser(x, self.model, t_i)
+        return x_hat
+    
 class NoSampler(Sampler):
 
     def predict(self, *args, **kwargs):

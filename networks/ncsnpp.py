@@ -65,6 +65,7 @@ class NCSNpp(nn.Module):
         embedding_type = 'fourier',
         input_channels = 4,
         spatial_channels = 1,
+        output_spatial_channels=1,
         dropout = .0,
         centered = True,
         discriminative = False,
@@ -109,8 +110,8 @@ class NCSNpp(nn.Module):
         self.input_channels = input_channels
         self.spatial_channels = spatial_channels
         self.total_channels = self.input_channels * self.spatial_channels
-
-        self.output_layer = nn.Conv2d(self.total_channels, 2*self.spatial_channels, 1)
+        self.output_spatial_channels = output_spatial_channels
+        self.output_layer = nn.Conv2d(self.total_channels, 2*self.output_spatial_channels, 1)
 
         modules = []
 
@@ -443,7 +444,7 @@ class NCSNpp(nn.Module):
 
         # Convert to complex number
         h = self.output_layer(h) #b,D=1,C_out,T
-        h = torch.reshape(h, (h.size(0), 2, self.spatial_channels, h.size(2), h.size(3)))
+        h = torch.reshape(h, (h.size(0), 2, self.output_spatial_channels, h.size(2), h.size(3)))
         h = torch.permute(h, (0, 2, 3, 4, 1)).contiguous() # b,2,D,F,T -> b,D,F,T,2
         h = torch.view_as_complex(h) #b,D,F,T
         return h
@@ -541,7 +542,13 @@ class mNCSNppTime(NCSNpp):
 
     def forward(self, x, time_cond=None):
         x = x.squeeze()
-        B,C,T=x.shape
+        try:
+            B,C,T=x.shape
+        except: #batch =1
+            C,T = x.shape
+            x = x.unsqueeze(0)
+            B=1
+            time_cond = time_cond[0].unsqueeze(0)
 
         x_spec=self.stft(x)
         x_spec=super().forward(x_spec, time_cond=time_cond)
@@ -550,52 +557,91 @@ class mNCSNppTime(NCSNpp):
 
 
 
-        
+# if __name__ == "__main__":
+#     import argparse
+#     import yaml
+#     import torch
+#     from omegaconf import OmegaConf
 
-if __name__ == "__main__":
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument("config", type=str)
+#     parser.add_argument("--device", type=str, default="cuda")
+#     parser.add_argument("--T", type=int, default=65536)
+#     args = parser.parse_args()
 
-    import argparse
-    import torchaudio
+#     cfg = OmegaConf.load(args.config)
 
-    stft_kwargs = {
-        "n_fft": 126,
-        "hop_length": 32,
-        "center": True
-    }
-    image_size = 64
-    ch_mult = [1, 2, 2, 2]
-    nf = 128
+#     # remove Hydra-only target field
+#     cfg.pop("_target_", None)
 
-    # stft_kwargs = {
-    #     "n_fft": 510,
-    #     "hop_length": 128,
-    #     "center": True
-    # }
-    # image_size = 256
-    # ch_mult = [1, 2, 2, 2]
-    # nf = 128
+#     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
-    x, sr = torchaudio.load("/home/workspace/yoavellinson/binaural_TSE_Gen/real_rec/mixtures_HATS_0_270/mix_0.wav")
-    # x, sr = torchaudio.load("/data/lemercier/databases/RIRs_organized/ACE_organized/data/Crucif_403a_1_RIR.wav")
-    # x = x[0].unsqueeze(0)
-    # x = x.unsqueeze(0)
-    x = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)(x)
+#     model = mNCSNppTime(**cfg).to(device)
+#     model.eval()
 
-    window = get_window("hann", stft_kwargs["n_fft"])
-    x_stft = torch.stft(x, window=window, return_complex=True, **stft_kwargs)
-    xhat = torch.istft(x_stft, window=window, **stft_kwargs)
+#     B = 4
+#     Cin = cfg.spatial_channels      # 2
+#     Cout = cfg.output_spatial_channels  # 1
+#     T = args.T
 
-    torchaudio.save("x_original.wav", x, 16000)
-    torchaudio.save("x_reconstructed.wav", xhat, 16000)
+#     x = torch.randn(B, Cin, T, device=device)
+#     time_cond = torch.ones(B, device=device) * 0.1
 
-    print(torch.nn.MSELoss()(x[..., : xhat.size(-1)], xhat))
+#     print("x:", x.shape)
+#     print("time_cond:", time_cond.shape)
 
-    stft = argparse.Namespace(**stft_kwargs)
+    # with torch.no_grad():
+    #     y = model(x, time_cond=time_cond)
 
-    dnn = mNCSNppTime(stft, input_channels=2,spatial_channels=2)
+    # print("y:", y.shape)
 
-    T = 2.1
-    x = x[:,:4*16000].unsqueeze(0)#torch.randn(2, 1, int(16000 * T))
-    sigma = torch.randn(1,)
-    xhat = dnn.cuda()(x.cuda(), sigma.cuda())
-    print(int(16000 * T), x.shape, xhat.shape)
+    # assert y.shape == (B, Cout, T), f"Expected {(B, Cout, T)}, got {y.shape}"
+    # print("Forward pass OK")      
+
+# if __name__ == "__main__":
+
+#     import argparse
+#     import torchaudio
+
+#     stft_kwargs = {
+#         "n_fft": 510,
+#         "hop_length": 128,
+#         "center": True
+#     }
+#     image_size = 64
+#     ch_mult = [1, 2, 2, 2]
+#     nf = 128
+
+#     # stft_kwargs = {
+#     #     "n_fft": 510,
+#     #     "hop_length": 128,
+#     #     "center": True
+#     # }
+#     # image_size = 256
+#     # ch_mult = [1, 2, 2, 2]
+#     # nf = 128
+
+#     x, sr = torchaudio.load("/home/workspace/yoavellinson/binaural_TSE_Gen/real_rec/mixtures_HATS_0_270/mix_0.wav")
+#     # x, sr = torchaudio.load("/data/lemercier/databases/RIRs_organized/ACE_organized/data/Crucif_403a_1_RIR.wav")
+#     # x = x[0].unsqueeze(0)
+#     # x = x.unsqueeze(0)
+#     x = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)(x)
+
+#     window = get_window("hann", stft_kwargs["n_fft"])
+#     x_stft = torch.stft(x, window=window, return_complex=True, **stft_kwargs)
+#     xhat = torch.istft(x_stft, window=window, **stft_kwargs)
+
+#     torchaudio.save("x_original.wav", x, 16000)
+#     torchaudio.save("x_reconstructed.wav", xhat, 16000)
+
+#     print(torch.nn.MSELoss()(x[..., : xhat.size(-1)], xhat))
+
+#     stft = argparse.Namespace(**stft_kwargs)
+
+#     dnn = mNCSNppTime(stft, input_channels=2,spatial_channels=2)
+
+#     T = 2.1
+#     x = x[:,:4*16000].unsqueeze(0)#torch.randn(2, 1, int(16000 * T))
+#     sigma = torch.randn(1,)
+#     xhat = dnn.cuda()(x.cuda(), sigma.cuda())
+#     print(int(16000 * T), x.shape, xhat.shape)

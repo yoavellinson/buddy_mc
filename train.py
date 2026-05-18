@@ -135,7 +135,7 @@ def _main(args):
         if ddp and dist.is_initialized():
             dist.destroy_process_group()
             
-@hydra.main(config_path="conf", config_name="conf", version_base=str(hydra.__version__))
+@hydra.main(config_path="conf", config_name="conf_VCTK_binaural_to_mono", version_base=str(hydra.__version__))
 def main(args):
     _main(args)
 

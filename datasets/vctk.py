@@ -267,8 +267,12 @@ class BinauralVCTKTestPaired(torch.utils.data.Dataset):
                     rir_exists= False
                     while not rir_exists:
                         line = self.rir_df.sample(n=1, replace=True)
-                        rir_path = self.get_path(line['hrir_rev_1_path'].item())
-                        hrtf_path = self.get_path(line['hrir_zero_1_path'].item())
+                        try:
+                            rir_path = self.get_path(line['hrir_rev_1_path'].item())
+                            hrtf_path = self.get_path(line['hrir_zero_1_path'].item())
+                        except:
+                            rir_path = line['hrir_rev_1_path'].item()
+                            hrtf_path = line['hrir_zero_1_path'].item()
                         rir_exists = Path(rir_path).exists() and Path(hrtf_path).exists()
                     self.hrtf_samples.append(hrtf_path)
                     self.rir_samples.append(rir_path)
@@ -414,7 +418,10 @@ class BinauralVCTKTrain(torch.utils.data.IterableDataset):
                 rir_exists= False
                 while not rir_exists:
                     line = self.rir_df.sample(n=1, replace=True)
-                    hrtf_path = self.get_path(line['hrir_zero_1_path'].item())
+                    try:
+                        hrtf_path = self.get_path(line['hrir_zero_1_path'].item())
+                    except:
+                        hrtf_path = line['hrir_zero_1_path'].item()
                     rir_exists = Path(hrtf_path).exists()
                 self.hrtf_samples.append(hrtf_path)
             else:
@@ -490,31 +497,6 @@ class BinauralVCTKTrain(torch.utils.data.IterableDataset):
         return len(self.train_samples)
     
 
-    # def __iter__(self):
-    #     while True:
-    #         num=random.randint(0,len(self.train_samples)-1)
-    #         file=self.train_samples[num]
-    #         hrtf = self.hrtf_samples[num]
-    #         data = self.conv_h(file,hrtf)
-    #         segment=data
-    #         #Stereo to mono
-    #         C,L=segment.shape
-    #         #crop or pad to get to the right length
-    #         if L>self.segment_length:
-    #             #get random segment
-    #             idx=np.random.randint(0,L-self.segment_length)
-    #             segment=segment[:,idx:idx+self.segment_length]
-    #         elif L<=self.segment_length:
-    #             pad_total = self.segment_length - L
-    #             idx = np.random.randint(0, pad_total + 1)
-    #             segment = np.pad(
-    #                 segment,
-    #                 pad_width=((0, 0), (idx, pad_total - idx)),
-    #                 mode="constant",
-    #                 constant_values=0,
-    #             )
-    #         yield  segment
-
     def __iter__(self):
         worker = get_worker_info()
         worker_id = worker.id if worker is not None else 0
@@ -556,6 +538,63 @@ class BinauralVCTKTrain(torch.utils.data.IterableDataset):
                 )
 
             yield torch.from_numpy(segment).float()
+
+class BinauralToMonoVCTKTrain(BinauralVCTKTrain):
+    def __init__(self, fs=16000, segment_length=65536, path="", speakers_discard=[], speakers_test=[], normalize=False, seed=0, shuffle=True, rir_df_path='/shared/cycle1_biu_gannot_prj/datsets/hrtf_db/csvs/HRTF_train_VAE_wsj0_10k_mp_clean.csv', sofa_root_path='/shared/cycle1_biu_gannot_prj/datsets/hrtf_db/hrtf_10k_mp'):
+        super().__init__(fs, segment_length, path, speakers_discard, speakers_test, normalize, seed, shuffle, rir_df_path, sofa_root_path)
+
+    def __iter__(self):
+        worker = get_worker_info()
+        worker_id = worker.id if worker is not None else 0
+
+        if dist.is_available() and dist.is_initialized():
+            rank = dist.get_rank()
+        else:
+            rank = 0
+
+        base_seed = torch.initial_seed() % (2**32)
+        seed = base_seed + 1000 * rank + worker_id
+
+        py_rng = random.Random(seed)
+        np_rng = np.random.default_rng(seed)
+
+        while True:
+            num = py_rng.randint(0, len(self.train_samples) - 1)
+
+            file = self.train_samples[num]
+            hrtf = self.hrtf_samples[num]
+
+            segment = self.conv_h(file, hrtf)  # (C, L)
+            mono,_ = sf.read(file)
+
+            C, L = segment.shape
+            L_mono = mono.shape[0]
+            mono_z = np.zeros(L,dtype = segment.dtype)
+            mono_z[:L_mono] = mono #L_mono must br <= L because of the conv
+
+            if L > self.segment_length:
+                idx = np_rng.integers(0, L - self.segment_length + 1)
+                segment = segment[:, idx:idx + self.segment_length]
+                mono_z = mono_z[idx:idx + self.segment_length]
+                
+            elif L < self.segment_length:
+                pad_total = self.segment_length - L
+                idx = np_rng.integers(0, pad_total + 1)
+
+                segment = np.pad(
+                    segment,
+                    pad_width=((0, 0), (idx, pad_total - idx)),
+                    mode="constant",
+                    constant_values=0,
+                )
+                mono_z = np.pad(
+                    mono_z,
+                    pad_width=(idx, pad_total - idx),
+                    mode="constant",
+                    constant_values=0,
+                )
+
+            yield torch.from_numpy(segment).float(),torch.from_numpy(mono_z).float()
 
 if __name__ =="__main__":
     segment_length= 65536

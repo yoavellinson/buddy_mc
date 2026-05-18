@@ -95,30 +95,56 @@ class SDE():
     def score2Tweedie(self, score, xt, t, *args, **kwargs):
         pass
 
-    def denoiser(self, xn , net, t, *args, **kwargs):
-        """
-        This method does the whole denoising step, which implies applying the model and the preconditioning
-        Args:
-            x (Tensor): shape: (B,1,T) Intermediate noisy latent to denoise
-            model (nn.Module): Model of the denoiser
-            sigma (float): noise level (equal to timestep is sigma=t, which is our default)
-        """
-        sigma = self._std(t).unsqueeze(-1)
-        sigma = sigma.view(*sigma.size(), *(1,)*(xn.ndim - sigma.ndim))
+    # def denoiser(self, xn , net, t,*args, **kwargs):
+    #     """
+    #     This method does the whole denoising step, which implies applying the model and the preconditioning
+    #     Args:
+    #         x (Tensor): shape: (B,1,T) Intermediate noisy latent to denoise
+    #         model (nn.Module): Model of the denoiser
+    #         sigma (float): noise level (equal to timestep is sigma=t, which is our default)
+    #     """
+    #     sigma = self._std(t).unsqueeze(-1)
+    #     sigma = sigma.view(*sigma.size(), *(1,)*(xn.ndim - sigma.ndim))
 
-        cskip = self.cskip(sigma)
-        cout = self.cout(sigma)
-        cin = self.cin(sigma)
-        cnoise = self.cnoise(sigma.squeeze())
+    #     cskip = self.cskip(sigma)
+    #     cout = self.cout(sigma)
+    #     cin = self.cin(sigma)
+    #     cnoise = self.cnoise(sigma.squeeze())
 
-        #check if cnoise is a scalar, if so, repeat it
-        if len(cnoise.shape) == 0:
-            cnoise = cnoise.repeat(xn.shape[0],)
+    #     #check if cnoise is a scalar, if so, repeat it
+    #     if len(cnoise.shape) == 0:
+    #         cnoise = cnoise.repeat(xn.shape[0],)
+    #     else:
+    #         cnoise = cnoise.view(xn.shape[0],)
+    #     o= cskip * xn + cout * net(cin * xn, cnoise)  #this will crash because of broadcasting problems, debug later!
+    #     return o
+    def denoiser(self, xn, net, t, cond=None, *args, **kwargs):
+        B = xn.shape[0]
+
+        if not torch.is_tensor(t):
+            t = torch.tensor(t, device=xn.device, dtype=xn.dtype)
         else:
-            cnoise = cnoise.view(xn.shape[0],)
+            t = t.to(device=xn.device, dtype=xn.dtype)
 
-        return cskip * xn + cout * net(cin * xn, cnoise)  #this will crash because of broadcasting problems, debug later!
+        if t.ndim == 0:
+            t = t.repeat(B)
 
+        sigma = self._std(t)
+        sigma_view = sigma.view(B, 1, 1)
+
+        cskip = self.cskip(sigma_view)
+        cout = self.cout(sigma_view)
+        cin = self.cin(sigma_view)
+        cnoise = self.cnoise(sigma)
+
+        if cond is not None:
+            net_in = torch.cat([cin * xn, cond], dim=1)  # [B,3,T]
+        else:
+            net_in = cin * xn
+
+        pred = net(net_in, cnoise)
+
+        return cskip * xn + cout * pred
 
     def prepare_train_preconditioning(self, x, t,n=None, *args, **kwargs):
         mu, sigma = self._mean(x, t), self._std(t).unsqueeze(-1)
@@ -143,17 +169,46 @@ class SDE():
 
         return cin * x_perturbed, target, cnoise
 
-    def loss_fn(self, net, x,n=None, *args, **kwargs):
+    # def loss_fn(self, net, x,n=None, *args, **kwargs):
+    #     """
+    #     Loss function, which is the mean squared error between the denoised latent and the clean latent
+    #     Args:
+    #         net (nn.Module): Model of the denoiser
+    #         x (Tensor): shape: (B,T) Intermediate noisy latent to denoise
+    #         sigma (float): noise level (equal to timestep is sigma=t, which is our default)
+    #     """
+    #     t = self.sample_time_training(x.shape[0]).to(x.device)
+    #     input, target, cnoise = self.prepare_train_preconditioning(x, t, n=n)
+    #     estimate = net(input.unsqueeze(1), cnoise).squeeze(1)
+    #     error = estimate - target
+
+    #     return error**2, self._std(t)
+    def loss_fn(self, net, x, n=None, cond=None, *args, **kwargs):
         """
-        Loss function, which is the mean squared error between the denoised latent and the clean latent
-        Args:
-            net (nn.Module): Model of the denoiser
-            x (Tensor): shape: (B,T) Intermediate noisy latent to denoise
-            sigma (float): noise level (equal to timestep is sigma=t, which is our default)
+        x:    [B, 1, T] clean mono target
+        cond: [B, 2, T] binaural condition
         """
-        t = self.sample_time_training(x.shape[0]).to(x.device)
-        input, target, cnoise = self.prepare_train_preconditioning(x, t, n=n)
-        estimate = net(input.unsqueeze(1), cnoise).squeeze(1)
+
+        B = x.shape[0]
+
+        t = self.sample_time_training(B).to(x.device)
+
+        input, target, cnoise = self.prepare_train_preconditioning(
+            x,
+            t,
+            n=n
+        )
+
+        # input:  [B,1,T] noisy latent
+        # cond:   [B,2,T]
+
+        if cond is not None:
+            net_input = torch.cat([input, cond], dim=1)  # [B,3,T]
+        else:
+            net_input = input
+
+        estimate = net(net_input, cnoise)
+
         error = estimate - target
 
         return error**2, self._std(t)

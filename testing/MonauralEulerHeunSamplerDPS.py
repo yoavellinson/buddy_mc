@@ -478,7 +478,7 @@ class MonauralEulerHeunSamplerDPS(EulerHeunSampler):
 
         # sample prior
         x = self.initialize_x(shape,device, t)
-        sf.write(f'/home/workspace/yoavellinson/buddy_mc/test_m_step/xs/x_init.wav',x.detach().cpu().squeeze(),16000)
+        # sf.write(f'/home/workspace/yoavellinson/buddy_mc/test_m_step/xs/x_init.wav',x.detach().cpu().squeeze(),16000)
         # parameter for langevin stochasticity, if Schurn is 0, gamma will be 0 to, so the sampler will be deterministic
         gamma = self.get_gamma(t).to(device)
         pbar = tqdm(range(0, self.T, 1))

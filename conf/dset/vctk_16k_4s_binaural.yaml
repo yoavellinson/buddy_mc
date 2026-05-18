@@ -1,8 +1,9 @@
 train:
-  _target_: datasets.vctk.BinauralVCTKTrain
+  _target_: datasets.vctk.BinauralToMonoVCTKTrain
   segment_length: 65536
   fs: 16000
-  path: /shared/cycle1_biu_gannot_prj/datsets/vctk/VCTK-Corpus-0.92/wav16k
+  path: /dsi/gannot-lab/gannot-lab1/datasets/VCTK/DS_10283_3443/VCTK-Corpus-0.92/wav16k #/shared/cycle1_biu_gannot_prj/datsets/vctk/VCTK-Corpus-0.92/wav16k
+  rir_df_path: /home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_test_VAE_wsj0_1k_mp.csv
   speakers_discard: ["p280", "p315"]
   speakers_test: ["p351", "p360",]
   normalize: False
@@ -14,8 +15,8 @@ test:
   _target_: datasets.vctk.BinauralVCTKTestPaired
   segment_length: 65536
   fs: 16000
-  path: /shared/cycle1_biu_gannot_prj/datsets/vctk/VCTK-Corpus-0.92/wav16k
-  rir_df_path: /shared/cycle1_biu_gannot_prj/datsets/hrtf_db/csvs/HRTF_train_VAE_wsj0_10k_mp_clean.csv
+  path: /dsi/gannot-lab/gannot-lab1/datasets/VCTK/DS_10283_3443/VCTK-Corpus-0.92/wav16k
+  rir_df_path: /home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_test_VAE_wsj0_1k_mp.csv
   speakers_discard: ["p280", "p315"]
   speakers_test: ["p226", "p287"]
   normalize: False

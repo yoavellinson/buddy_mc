@@ -116,11 +116,12 @@ def main(args):
 if __name__=="__main__":
     import sys
     sys.argv.extend([
-    "--config-name=conf_VCTK_binaural.yaml",
-    "tester=blind_dereverberation_monaural",
-    f"tester.checkpoint=/home/users/yoav.ellinson/buddy_mc/experiments_binaural/checkpoints/VCTK_16k_binaural_DPS-520000-520000.pt",
-    f"model_dir=experiments/binaural_testing_informed",
+    "--config-name=conf_VCTK_binaural_to_mono.yaml",
+    "tester=blind_dereverberation_binaural",
+    f"tester.checkpoint=/home/workspace/yoavellinson/buddy_mc/experiments_binaural_to_mono/checkpoints/VCTK_16k_binaural_DPS-20-20.pt",
+    f"model_dir=experiments_binaural_to_mono",
     "dset=vctk_16k_4s_binaural",
+    "+gpu=1",
     "dset.test.num_examples=1",
     ])
     main()

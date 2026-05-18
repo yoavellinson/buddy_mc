@@ -4,7 +4,7 @@ tester:
   _target_: 'testing.tester.Tester'
 
 sampler:
-  _target_: 'testing.MonauralEulerHeunSamplerDPS.MonauralEulerHeunSamplerDPS'
+  _target_: 'testing.BinauralToMonoEulerHeunSamplerDPS.BinauralToMonoEulerHeunSamplerDPS'
 
 modes: ["binaural_dereverberation"] #modes to test 
 
@@ -79,7 +79,7 @@ posterior_sampling:
     grad_clip: 1
   
   warm_initialization:
-    mode: "wpe_scaled"
+    mode: "none" #"wpe_scaled"
     scaling_factor: 0.05
     wpe:
       delay: 2

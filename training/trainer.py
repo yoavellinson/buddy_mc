@@ -23,8 +23,6 @@ import utils.training_utils as t_utils
 
 #----------------------------------------------------------------------------
 
-# class Trainer():
-#     def __init__(self, args=None, dset=None, network=None, diff_params=None, tester=None, device='cpu'):
 class Trainer():
     def __init__(
         self,
@@ -321,25 +319,28 @@ class Trainer():
     #     ''' Get an audio example from dset and apply the transform (spectrogram + compression)'''
     #     sample = next(self.dset).to(self.device)
     #     return sample
+    
     def get_batch(self):
         try:
-            sample = next(self.train_iter)
+            sample,target = next(self.train_iter)
         except StopIteration:
             if getattr(self, "train_sampler", None) is not None:
                 self.train_sampler.set_epoch(self.it)
             self.train_iter = iter(self.dset)
-            sample = next(self.train_iter)
+            sample,target = next(self.train_iter)
 
-        return sample.to(self.device, non_blocking=True)
+        return sample.to(self.device, non_blocking=True),target.to(self.device, non_blocking=True)
     
     def train_step(self):
         '''Training step'''
         self.optimizer.zero_grad()
 
-        sample = self.get_batch()
+        sample,target = self.get_batch()
+        if target.ndim == 2:
+            target = target.unsqueeze(1)
         noise = None
 
-        error, sigma = self.diff_params.loss_fn(self.network, sample, n=noise)
+        error, sigma = self.diff_params.loss_fn(self.network, target, n=noise,cond=sample)
         loss = error.mean()
         loss.backward()
         

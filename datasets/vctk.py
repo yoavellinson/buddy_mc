@@ -569,32 +569,27 @@ class BinauralToMonoVCTKTrain(BinauralVCTKTrain):
 
             C, L = segment.shape
             L_mono = mono.shape[0]
-            mono_z = np.zeros(L,dtype = segment.dtype)
-            mono_z[:L_mono] = mono #L_mono must br <= L because of the conv
+            if L > L_mono:
+                mono = np.pad(mono, (0, L - L_mono), mode="constant")
+            elif L_mono > L:
+                mono = mono[:L]
+
+            L = segment.shape[-1]
+            assert mono.shape[0] == L
 
             if L > self.segment_length:
                 idx = np_rng.integers(0, L - self.segment_length + 1)
                 segment = segment[:, idx:idx + self.segment_length]
-                mono_z = mono_z[idx:idx + self.segment_length]
-                
+                mono = mono[idx:idx + self.segment_length]
+
             elif L < self.segment_length:
                 pad_total = self.segment_length - L
                 idx = np_rng.integers(0, pad_total + 1)
 
-                segment = np.pad(
-                    segment,
-                    pad_width=((0, 0), (idx, pad_total - idx)),
-                    mode="constant",
-                    constant_values=0,
-                )
-                mono_z = np.pad(
-                    mono_z,
-                    pad_width=(idx, pad_total - idx),
-                    mode="constant",
-                    constant_values=0,
-                )
+                segment = np.pad(segment, ((0, 0), (idx, pad_total - idx)), mode="constant")
+                mono = np.pad(mono, (idx, pad_total - idx), mode="constant")
 
-            yield torch.from_numpy(segment).float(),torch.from_numpy(mono_z).float()
+            yield torch.from_numpy(segment).float(), torch.from_numpy(mono).float().unsqueeze(0)
 
 if __name__ =="__main__":
     segment_length= 65536

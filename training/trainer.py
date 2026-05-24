@@ -331,7 +331,7 @@ class Trainer():
 
         return sample.to(self.device, non_blocking=True),target.to(self.device, non_blocking=True)
     
-    def train_step(self):
+    def train_step(self,debug=False):
         '''Training step'''
         self.optimizer.zero_grad()
 
@@ -352,6 +352,56 @@ class Trainer():
 
         if self.args.logging.log and self.is_main:
             self.process_loss_for_logging(error, sigma)
+        if debug:
+            B = target.shape[0]
+            t = torch.ones(B, device=target.device) * 0.01
+            noise = torch.randn_like(target)
+
+            x_t = target + t[:, None, None] * noise
+
+            with torch.no_grad():
+                x0_hat = self.diff_params.denoiser(
+                    xn=x_t,
+                    net=self.network,
+                    t=t,
+                    cond=sample,
+                )
+
+            print("sample", sample.shape)
+            print("target", target.shape)
+            print("x_t", x_t.shape)
+            print("x0_hat", x0_hat.shape)
+            print("MSE noisy-target:", ((x_t - target) ** 2).mean().item())
+            print("MSE denoised-target:", ((x0_hat - target) ** 2).mean().item())
+            idx = 0
+
+            sample_cpu = sample[idx].detach().cpu()
+            target_cpu = target[idx].detach().cpu()
+            import soundfile as sf
+            # binaural condition
+            sf.write(
+                "debug_audio/sample_binaural.wav",
+                sample_cpu.T,
+                16000
+            )
+
+            # dry mono target
+            sf.write(
+                "debug_audio/target_mono.wav",
+                target_cpu.T,
+                16000
+            )
+
+            # quick mono downmix for alignment comparison
+            sample_mono = sample_cpu.mean(dim=0, keepdim=True)
+
+            sf.write(
+                "debug_audio/sample_downmix.wav",
+                sample_mono.T,
+                16000
+            )
+
+            print("Saved debug audio.")
 
     def update_ema(self):
         """Update exponential moving average of self.network weights."""

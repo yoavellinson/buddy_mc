@@ -169,46 +169,46 @@ class SDE():
 
         return cin * x_perturbed, target, cnoise
 
-    # def loss_fn(self, net, x,n=None, *args, **kwargs):
-    #     """
-    #     Loss function, which is the mean squared error between the denoised latent and the clean latent
-    #     Args:
-    #         net (nn.Module): Model of the denoiser
-    #         x (Tensor): shape: (B,T) Intermediate noisy latent to denoise
-    #         sigma (float): noise level (equal to timestep is sigma=t, which is our default)
-    #     """
-    #     t = self.sample_time_training(x.shape[0]).to(x.device)
-    #     input, target, cnoise = self.prepare_train_preconditioning(x, t, n=n)
-    #     estimate = net(input.unsqueeze(1), cnoise).squeeze(1)
-    #     error = estimate - target
-
-    #     return error**2, self._std(t)
-    def loss_fn(self, net, x, n=None, cond=None, *args, **kwargs):
+    def loss_fn(self, net, x,n=None, *args, **kwargs):
         """
-        x:    [B, 1, T] clean mono target
-        cond: [B, 2, T] binaural condition
+        Loss function, which is the mean squared error between the denoised latent and the clean latent
+        Args:
+            net (nn.Module): Model of the denoiser
+            x (Tensor): shape: (B,T) Intermediate noisy latent to denoise
+            sigma (float): noise level (equal to timestep is sigma=t, which is our default)
         """
-
-        B = x.shape[0]
-
-        t = self.sample_time_training(B).to(x.device)
-
-        input, target, cnoise = self.prepare_train_preconditioning(
-            x,
-            t,
-            n=n
-        )
-
-        # input:  [B,1,T] noisy latent
-        # cond:   [B,2,T]
-
-        if cond is not None:
-            net_input = torch.cat([input, cond], dim=1)  # [B,3,T]
-        else:
-            net_input = input
-
-        estimate = net(net_input, cnoise)
-
+        t = self.sample_time_training(x.shape[0]).to(x.device)
+        input, target, cnoise = self.prepare_train_preconditioning(x, t, n=n)
+        estimate = net(input.unsqueeze(1), cnoise).squeeze(1)
         error = estimate - target
 
         return error**2, self._std(t)
+    # def loss_fn(self, net, x, n=None, cond=None, *args, **kwargs):
+    #     """
+    #     x:    [B, 1, T] clean mono target
+    #     cond: [B, 2, T] binaural condition
+    #     """
+
+    #     B = x.shape[0]
+
+    #     t = self.sample_time_training(B).to(x.device)
+
+    #     input, target, cnoise = self.prepare_train_preconditioning(
+    #         x,
+    #         t,
+    #         n=n
+    #     )
+
+    #     # input:  [B,1,T] noisy latent
+    #     # cond:   [B,2,T]
+
+    #     if cond is not None:
+    #         net_input = torch.cat([input, cond], dim=1)  # [B,3,T]
+    #     else:
+    #         net_input = input
+
+    #     estimate = net(net_input, cnoise)
+
+    #     error = estimate - target
+
+    #     return error**2, self._std(t)

@@ -94,3 +94,31 @@ class EDM(SDE):
     
     def _ode_integrand(self, x, t, score):
         return -t * score
+    
+    def loss_fn(self, net, x0, n=None, cond=None, *args, **kwargs):
+        """
+        x0:   [B,1,T] clean mono target
+        cond: [B,2,T] binaural condition
+        """
+
+        B = x0.shape[0]
+
+        t = self.sample_time_training(B).to(x0.device)
+
+        sigma = self._std(t).view(B, 1, 1)
+
+        if n is None:
+            n = torch.randn_like(x0)
+
+        x_t = x0 + sigma * n
+
+        x0_hat = self.denoiser(
+            xn=x_t,
+            net=net,
+            t=t,
+            cond=cond,
+        )
+
+        error = x0_hat - x0
+
+        return error**2, self._std(t)

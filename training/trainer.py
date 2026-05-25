@@ -157,7 +157,7 @@ class Trainer():
         # Resume training from latest checkpoint available in the output director
         if checkpoint_path is not None:
             try:
-                checkpoint=torch.load(checkpoint_path, map_location=self.device)
+                checkpoint=torch.load(checkpoint_path, map_location=self.device,weights_only=False)
                 #if it is possible, retrieve the iteration number from the checkpoint
                 try:
                     self.it = checkpoint['it']

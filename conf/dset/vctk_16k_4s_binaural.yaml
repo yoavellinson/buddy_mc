@@ -7,7 +7,7 @@ train:
   speakers_discard: ["p280", "p315"]
   speakers_test: ["p351", "p360",]
   normalize: False
-  #sigma_data: 0.05 #for normalization purposes
+  # sigma_data: 0.05 #for normalization purposes
   #random seed
   seed: 0
 

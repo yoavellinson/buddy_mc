@@ -311,9 +311,17 @@ class BinauralVCTKTestPaired(torch.utils.data.Dataset):
 
 
             data_rir = self.conv_h(file,file_rir)
+            L_rir = data_rir.shape[-1]
+            L_clean = data.shape[0]
+
+            if L_rir > L_clean:
+                data = np.pad(data, (0, L_rir - L_clean), mode="constant")
+            elif L_clean > L_rir:
+                data = data[:L_rir]
+            assert data.shape[0] == data_rir.shape[-1]
             segment_rir, shared_idx = self.fix_length_2d(data_rir)
+            segment, _ = self.fix_length(data, shared_idx)
             self.test_rir.append(segment_rir)
-            segment,_ = self.fix_length(data,shared_idx)
             self.test_audio.append(segment) 
             h, samplerate = sf.read(file_rir)
             self.test_h.append(h)

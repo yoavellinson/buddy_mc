@@ -1,4 +1,4 @@
-exp_name: "VCTK_16k_binaural_DPS" #name of the experiment
+exp_name: "VCTK_16k_binaural_DPS_new_loss_schurn10_snoise1_250k_cond_scaleT500" #name of the experiment
 
 model_dir: experiments_binaural_to_mono #directory where the model will be saved locally
 

@@ -52,13 +52,22 @@ class BinauralToMonoEulerHeunSamplerDPS(EulerHeunSampler):
             x = sigma_max * torch.randn(shape, device=device)
 
         elif mode == "reverb_scaled":
-            # collapse binaural observation to mono warm start
-            mono_init = self.y.mean(dim=1, keepdim=True)  # [B,1,T]
+            # Use a single binaural channel as warm start.
+            # Averaging channels creates comb-filter / double-speech artifacts
+            # because of interaural delays.
+            mono_init = self.y[:, :1, :]  # [B,1,T]
 
             scale = self.args.tester.posterior_sampling.warm_initialization.scaling_factor
-            mono_init = scale * mono_init / (mono_init.std(dim=-1, keepdim=True) + 1e-8)
 
-            x = mono_init + sigma_max * torch.randn(shape, device=device)
+            mono_init = scale * mono_init / (
+                mono_init.std(dim=-1, keepdim=True) + 1e-8
+            )
+
+            x = mono_init + sigma_max * torch.randn(
+                shape,
+                device=device,
+                dtype=mono_init.dtype,
+            )
 
         elif mode == "wpe_scaled":
             print("Processing WPE")
@@ -67,32 +76,19 @@ class BinauralToMonoEulerHeunSamplerDPS(EulerHeunSampler):
             iterations = self.args.tester.posterior_sampling.warm_initialization.wpe.iterations
             taps = self.args.tester.posterior_sampling.warm_initialization.wpe.taps
 
-            # WPE expects numpy; process each batch item independently
             x_pred_list = []
 
             for b in range(self.y.shape[0]):
                 Y_b = self.Y[b]  # [2,F,TT]
                 Y_np = Y_b.detach().cpu().numpy().transpose(2, 0, 1)  # [TT,2,F]
 
-                Z_right = wpe(
+                Z = wpe(
                     Y_np,
                     taps=taps,
                     delay=delay,
                     iterations=iterations,
                     statistics_mode="full",
-                )
-
-                Z_left = wpe(
-                    Y_np[:, [1, 0], :],
-                    taps=taps,
-                    delay=delay,
-                    iterations=iterations,
-                    statistics_mode="full",
-                )
-
-                Z = np.empty_like(Y_np)
-                Z[:, 0, :] = Z_left[:, 1, :]
-                Z[:, 1, :] = Z_right[:, 1, :]
+                )  # [TT,2,F]
 
                 Z = torch.from_numpy(Z.transpose(1, 2, 0)).to(
                     device=self.y.device,
@@ -101,8 +97,10 @@ class BinauralToMonoEulerHeunSamplerDPS(EulerHeunSampler):
 
                 y_wpe = self.istft(Z.unsqueeze(0), length=self.y.shape[-1])  # [1,2,T]
 
-                # collapse binaural WPE output to mono
-                mono_wpe = y_wpe.mean(dim=1, keepdim=True)  # [1,1,T]
+                # Use one channel, not mean, to avoid comb-filter/double-speech artifacts
+                mono_wpe = y_wpe[:, :1, :]  # left channel: [1,1,T]
+                # mono_wpe = y_wpe[:, 1:2, :]  # right channel alternative
+
                 x_pred_list.append(mono_wpe)
 
             x_pred = torch.cat(x_pred_list, dim=0).to(device=device, dtype=self.y.dtype)
@@ -110,7 +108,11 @@ class BinauralToMonoEulerHeunSamplerDPS(EulerHeunSampler):
             scale = self.args.tester.posterior_sampling.warm_initialization.scaling_factor
             x_pred = scale * x_pred / (x_pred.std(dim=-1, keepdim=True) + 1e-8)
 
-            x = x_pred + sigma_max * torch.randn(shape, device=device)
+            x = x_pred + sigma_max * torch.randn(
+                shape,
+                device=device,
+                dtype=x_pred.dtype,
+            )
 
         else:
             raise NotImplementedError(f"Unknown warm initialization mode: {mode}")
@@ -208,37 +210,48 @@ class BinauralToMonoEulerHeunSamplerDPS(EulerHeunSampler):
         return stft_signal.reshape(B,C,F,T)
     
     def istft(self, stft_signal, length=None):
-        """
-        Args:
-            stft_signal: [J, F, T] - Complex STFT
-            length: Optional original length to trim padding exactly
-        Returns:
-            time_signal: [J, Time_Samples] - Reconstructed waveform
-        """
-        # 1. Extract Options
-        n_fft = self.stft_options['size']
-        hop_length = self.stft_options['shift']
+        n_fft = self.stft_options["size"]
+        hop_length = self.stft_options["shift"]
         win_length = n_fft
-        
+
         device = stft_signal.device
         window = torch.hann_window(win_length, periodic=False).to(device)
 
-        # 2. Compute iSTFT
-        # PyTorch natively handles the batch (J) dimension
-        time_signal = torch.istft(
-            stft_signal,
-            n_fft=n_fft,
-            hop_length=hop_length,
-            win_length=win_length,
-            window=window,
-            center=True,
-            normalized=False,
-            onesided=True,
-            length=length, # Trims the 'fading' padding automatically
-            return_complex=False
-        )
-        
-        return time_signal
+        if stft_signal.ndim == 4:
+            B, C, Freq, Frames = stft_signal.shape
+            stft_signal = stft_signal.reshape(B * C, Freq, Frames)
+
+            time_signal = torch.istft(
+                stft_signal,
+                n_fft=n_fft,
+                hop_length=hop_length,
+                win_length=win_length,
+                window=window,
+                center=True,
+                normalized=False,
+                onesided=True,
+                length=length,
+                return_complex=False,
+            )
+
+            return time_signal.reshape(B, C, -1)
+
+        elif stft_signal.ndim == 3:
+            return torch.istft(
+                stft_signal,
+                n_fft=n_fft,
+                hop_length=hop_length,
+                win_length=win_length,
+                window=window,
+                center=True,
+                normalized=False,
+                onesided=True,
+                length=length,
+                return_complex=False,
+            )
+
+        else:
+            raise ValueError(f"Expected STFT shape [B,C,F,T] or [C,F,T], got {stft_signal.shape}")
     
     def conv_h(self, wav, h):
 
@@ -278,13 +291,14 @@ class BinauralToMonoEulerHeunSamplerDPS(EulerHeunSampler):
         
         #E step - Denoise using posterior sampleing
         x_den = self.get_Tweedie_estimate(x_hat, t_hat) #\hat{x_0}
+        lh_score, rec_loss_value = self.get_likelihood_score_h_orig(x_den, x_hat, h_orig,i)
+        x_hat_ng = x_hat.detach()
+        score = self.Tweedie2score(x_den, x_hat_ng, t_hat)
+
         if self.args.tester.posterior_sampling.constraint_speech_magnitude.use:
             s_scale = self.args.tester.posterior_sampling.constraint_speech_magnitude.speech_scaling
             x_den = x_den * (s_scale / (x_den.detach().std() + 1e-8))
                 
-        lh_score, rec_loss_value = self.get_likelihood_score_h_orig(x_den, x_hat, h_orig,i)
-        x_hat_ng = x_hat.detach()
-        score = self.Tweedie2score(x_den, x_hat_ng, t_hat)
 
         ode_integrand = self.diff_params._ode_integrand(x_hat_ng, t_hat, score) + lh_score
         dt = t_iplus1 - t_hat
@@ -305,7 +319,6 @@ class BinauralToMonoEulerHeunSamplerDPS(EulerHeunSampler):
         # sample prior
         x = self.initialize_x(shape,device, t)
 
-        # parameter for langevin stochasticity, if Schurn is 0, gamma will be 0 to, so the sampler will be deterministic
         gamma = self.get_gamma(t).to(device)
         pbar = tqdm(range(0, self.T, 1))
 
@@ -314,6 +327,10 @@ class BinauralToMonoEulerHeunSamplerDPS(EulerHeunSampler):
             x, x_den,rec_loss_value = self.stepEM_h_orig(x, t[i] , t[i+1], gamma[i],i,h_orig)
             pbar.set_postfix({
                "rec": f"{rec_loss_value.item():.4f}"})
+        
+        # t_post = t[-2] if t[-1].item() == 0 else t[-1]
+        # with torch.no_grad():
+        #     x_den = self.get_Tweedie_estimate(x, t_post).detach()
         return x_den
 
     def predict_unconditional(self, *args, **kwargs):
@@ -335,51 +352,71 @@ class BinauralToMonoEulerHeunSamplerDPS(EulerHeunSampler):
             shape = (y.shape[0], 1, y.shape[-1])
 
         x_den = self.predict_h_orig(shape, y.device, h_orig)
+
         return x_den
 
 
-    
+# class CompressedSTFTLoss(nn.Module):
+#     """
+#     Exact implementation of Eq. 6 from the provided paper.
+#     Uses power-law compression (2/3) on the magnitude while preserving phase.
+#     """
+#     def __init__(self, compression_factor=2/3):
+#         super(CompressedSTFTLoss, self).__init__()
+#         self.alpha = compression_factor
 
+#     def forward(self, Y_hat, Y):
+#         """
+#         Args:
+#             Y_hat: [J, F, T] - Estimated complex STFT (h * x_hat_0)
+#             Y: [J, F, T] - Observed complex STFT
+#         """
+#         # 1. Apply Compression S_comp to both signals
+#         # S_comp = |Y|^alpha * exp(j * phase(Y))
+        
+#         # Process Y_hat
+#         mag_hat = torch.abs(Y_hat)
+#         phase_hat = torch.angle(Y_hat)
+#         S_hat = (mag_hat + 1e-8).pow(self.alpha) * torch.exp(1j * phase_hat)
+        
+#         # Process Y (Observed)
+#         mag_y = torch.abs(Y)
+#         phase_y = torch.angle(Y)
+#         S_y = (mag_y + 1e-8).pow(self.alpha) * torch.exp(1j * phase_y)
+        
+#         # 2. Compute the Complex L2 distance (Eq. 6)
+#         # Using view_as_real to handle complex squared distance
+#         diff = S_y - S_hat
+#         squared_diff = torch.view_as_real(diff).pow(2).sum(dim=-1) # [J, F, T]
+        
+#         # 3. Mean over all dimensions (M time frames, K freq bins, J channels)
+#         # The 1/M in Eq. 6 suggests a mean over the time dimension
+#         loss = torch.mean(squared_diff)
+        
+#         return loss
+    
 class CompressedSTFTLoss(nn.Module):
-    """
-    Exact implementation of Eq. 6 from the provided paper.
-    Uses power-law compression (2/3) on the magnitude while preserving phase.
-    """
-    def __init__(self, compression_factor=2/3):
-        super(CompressedSTFTLoss, self).__init__()
+    def __init__(self, compression_factor=2/3, weight=512, summean=True):
+        super().__init__()
         self.alpha = compression_factor
+        self.weight = weight
+        self.summean = summean
 
     def forward(self, Y_hat, Y):
-        """
-        Args:
-            Y_hat: [J, F, T] - Estimated complex STFT (h * x_hat_0)
-            Y: [J, F, T] - Observed complex STFT
-        """
-        # 1. Apply Compression S_comp to both signals
-        # S_comp = |Y|^alpha * exp(j * phase(Y))
-        
-        # Process Y_hat
-        mag_hat = torch.abs(Y_hat)
-        phase_hat = torch.angle(Y_hat)
-        S_hat = (mag_hat + 1e-8).pow(self.alpha) * torch.exp(1j * phase_hat)
-        
-        # Process Y (Observed)
-        mag_y = torch.abs(Y)
-        phase_y = torch.angle(Y)
-        S_y = (mag_y + 1e-8).pow(self.alpha) * torch.exp(1j * phase_y)
-        
-        # 2. Compute the Complex L2 distance (Eq. 6)
-        # Using view_as_real to handle complex squared distance
-        diff = S_y - S_hat
-        squared_diff = torch.view_as_real(diff).pow(2).sum(dim=-1) # [J, F, T]
-        
-        # 3. Mean over all dimensions (M time frames, K freq bins, J channels)
-        # The 1/M in Eq. 6 suggests a mean over the time dimension
-        loss = torch.mean(squared_diff)
-        
-        return loss
-    
+        # Y_hat, Y: [..., F, T], complex
 
+        Y_hat_comp = (Y_hat.abs() + 1e-8).pow(self.alpha) * torch.exp(1j * Y_hat.angle())
+        Y_comp = (Y.abs() + 1e-8).pow(self.alpha) * torch.exp(1j * Y.angle())
+
+        diff2 = (Y_comp - Y_hat_comp).abs().pow(2)  # [..., F, T]
+
+        if self.summean:
+            loss = torch.mean(torch.sum(diff2, dim=-2))  # sum F, mean rest
+        else:
+            loss = torch.mean(diff2)
+
+        return self.weight * loss
+    
 def _sisdr_time_safe(est: torch.Tensor, ref: torch.Tensor, eps: float = 1e-8, return_db: bool = True):
     """
     est, ref: [B, C, L] real tensors (time-domain)

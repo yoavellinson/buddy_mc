@@ -1,0 +1,9 @@
+- tester=blind_dereverberation_binaural
+- tester.checkpoint=/home/workspace/yoavellinson/buddy_mc/experiments_binaural_to_mono/checkpoints/VCTK_16k_binaural_DPS-250000-250000.pt
+- model_dir=experiments_binaural_to_mono
+- dset=vctk_16k_4s_binaural
+- +gpu=1
+- dset.test.num_examples=1
+- tester.posterior_sampling.zeta=6
+- tester.sampling_params.lambda_stft=1
+- tester.sampling_params.lambda_sisdr=1

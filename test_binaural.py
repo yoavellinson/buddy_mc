@@ -99,66 +99,31 @@ def _main(args):
 
     tester.do_test()
 
-# @hydra.main(cons
-@hydra.main(config_path="conf", config_name="conf_VCTK_binaural", version_base=str(hydra.__version__))
+@hydra.main(config_path="conf", config_name="conf_VCTK_binaural", version_base=None)
 def main(args):
-    # job_num = HydraConfig.get().job.num
-    
-    # with open_dict(args):
-    #     # This cycles 0, 1, 2, 3 based on your 4 GPUs
-    #     args.gpu = args.get("gpu", job_num % 4)
-    
-    # print(f"Running Job {job_num} on GPU {args.gpu}")    
-    # torch.cuda.set_device(args.gpu)
-    
+    gpu = args.get("gpu", 0)
+
+    print(f"Running on GPU {gpu}")
+    torch.cuda.set_device(gpu)
+
     _main(args)
 
 if __name__=="__main__":
     import sys
     sys.argv.extend([
+    "-m",
     "--config-name=conf_VCTK_binaural_to_mono.yaml",
+    "hydra/launcher=basic",
     "tester=blind_dereverberation_binaural",
-    f"tester.checkpoint=/home/workspace/yoavellinson/buddy_mc/experiments_binaural_to_mono/checkpoints/VCTK_16k_binaural_DPS-20-20.pt",
+    f"tester.checkpoint=/home/workspace/yoavellinson/buddy_mc/experiments_binaural_to_mono/checkpoints/VCTK_16k_binaural_DPS-250000-250000.pt",
     f"model_dir=experiments_binaural_to_mono",
     "dset=vctk_16k_4s_binaural",
     "+gpu=1",
-    "dset.test.num_examples=1",
+    "dset.test.num_examples=10",
+    "tester.posterior_sampling.zeta=5",
+    "tester.sampling_params.lambda_stft=1.0",
+    "tester.sampling_params.lambda_sisdr=1",
+    "tester.sampling_params.T=500"
     ])
     main()
 
-'''
-python test_binaural.py -m \
-    --config-name=conf_VCTK_binaural.yaml \
-    tester=blind_dereverberation_monaural \
-    tester.checkpoint=/home/workspace/yoavellinson/buddy_mc/ckpt/VCTK_16k_4s_time-190000.pt \
-    model_dir=experiments/monaural_testing_gridsearch \
-    dset=vctk_16k_4s_binaural \
-    tester.posterior_sampling.zeta=0.3,0.35,0.4,0.45 \
-    tester.sampling_params.lambda_stft=0.1,0.01,1,10,0 \
-    tester.sampling_params.eta=0.8,0.9,0.95 \
-    tester.sampling_params.lambda_h=1e-2,1e-3,1e-4,1e-1 \
-    dset.test.num_examples=10
-
-
-    python test_binaural.py -m \
-    --config-name=conf_VCTK_binaural.yaml \
-    tester=blind_dereverberation_monaural \
-    tester.checkpoint=/home/workspace/yoavellinson/buddy_mc/ckpt/VCTK_16k_4s_time-190000.pt \
-    model_dir=experiments/monaural_testing_gridsearch \
-    dset=vctk_16k_4s_binaural \
-    tester.posterior_sampling.zeta=0.2 \
-    tester.sampling_params.lambda_stft=10 \
-    tester.sampling_params.alpha=0.5 \
-    dset.test.num_examples=20 \
-    +gpu=2
-
-
-    python test_binaural.py -m \
-    --config-name=conf_VCTK_binaural.yaml \
-    tester=blind_dereverberation_monaural \
-    tester.checkpoint=/home/workspace/yoavellinson/buddy_mc/ckpt/VCTK_16k_4s_time-190000.pt \
-    model_dir=experiments/monaural_testing_gridsearch \
-    dset=vctk_16k_4s_binaural \
-    tester.sampling_params.warmup_steps=0,10,20,30,40,50 \
-    dset.test.num_examples=1
-'''

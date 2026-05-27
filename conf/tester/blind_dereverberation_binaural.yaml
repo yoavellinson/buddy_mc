@@ -10,32 +10,37 @@ modes: ["binaural_dereverberation"] #modes to test
 
 checkpoint: None
 
+input_scaling:
+  mode: "fixed_train_ratio"
+  target_sigma: 0.05
+  cond_to_target_std: 0.3843
+
 sampling_params:
-  same_as_training: False #if true, the sampling parameters will be the same as the ones used for training (sigma_data, sigma_min, sigma_max and rho)
+  same_as_training: True #if true, the sampling parameters will be the same as the ones used for training (sigma_data, sigma_min, sigma_max and rho)
   sde_hp:
     sigma_data: 0.05 #default for maestro
     sigma_min: 1e-4
     sigma_max: 5e-1
     # sigma_max: 8 #use that if no warm initialization
     rho: 10
-  Schurn: 1
+  Schurn: 10
   Snoise: 1
   Stmin: 0
   Stmax: 10
   order: 2 #order of the sampler (1 or 2)
-  T: 80 #number of discretizatio steprs
+  T: 200 #number of discretizatio steprs
   schedule: "edm" #"log": log schedule using the parameters in sampling_params
   warmup_steps: 50
   M: 48
-  lambda_sisdr: 0.2
+  lambda_sisdr: 1.0
   alpha: 0.0
-  lambda_stft: 1.0
+  lambda_stft: 0
   eta: 0.99
   beta: 0.9
   lambda_h : 1e-3
 
 posterior_sampling:
-  zeta: 0.25
+  zeta: 0.35
   rec_loss: 
     name: "l2_comp_stft_summean" #"sisdr"
     weight: 512
@@ -79,7 +84,7 @@ posterior_sampling:
     grad_clip: 1
   
   warm_initialization:
-    mode: "none" #"wpe_scaled"
+    mode: 'reverb_scaled' # 'wpe_scaled' #"reverb_scaled" #"wpe_scaled"
     scaling_factor: 0.05
     wpe:
       delay: 2
@@ -87,7 +92,7 @@ posterior_sampling:
       iterations: 5
 
   constraint_speech_magnitude:
-    use: True
+    use: False
     speech_scaling: 0.05  #Match the sigma_data of dataset
 
 unconditional:

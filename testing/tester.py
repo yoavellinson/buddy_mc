@@ -36,7 +36,35 @@ class Tester():
         self.in_training = in_training
 
         self.sampler=hydra.utils.instantiate(args.tester.sampler, self.network, self.diff_params, self.args)
-    
+        # sigma_data = self.estimate_sigma_data(self.test_set)
+        # print("sigma_data =", sigma_data)
+
+
+    def estimate_sigma_data(self,dataset, num_examples=None):
+        total_sum = 0.0
+        total_sq_sum = 0.0
+        total_count = 0
+
+        N = len(dataset) if num_examples is None else min(num_examples, len(dataset))
+
+        for i in tqdm(range(N)):
+            target = dataset[i][0]  # clean mono
+
+            if not torch.is_tensor(target):
+                target = torch.tensor(target)
+
+            target = target.float()
+
+            total_sum += target.sum().item()
+            total_sq_sum += (target ** 2).sum().item()
+            total_count += target.numel()
+
+        mean = total_sum / total_count
+        var = total_sq_sum / total_count - mean ** 2
+
+        return var ** 0.5
+
+
     def load_latest_checkpoint(self):
         #load the latest checkpoint from self.args.model_dir
         try:
@@ -203,17 +231,51 @@ class Tester():
             return
         
         for i, (original, rir, filename,h_orig,hrtf) in enumerate(tqdm(self.test_set)):
-
-            seg = torch.from_numpy(original).float().to(self.device)
-            seg = self.args.tester.posterior_sampling.warm_initialization.scaling_factor * seg / seg.std() #Normalize the input to match sigma_data of dataset
+            if self.args.tester.sampling_params.lambda_sisdr ==0 and self.args.tester.sampling_params.lambda_stft == 0:
+                break
+            seg_raw = torch.from_numpy(original).float().to(self.device)
 
             #read and prepare the RIR
-            y=torch.Tensor(rir).to(self.device)
+            y_raw=torch.Tensor(rir).to(self.device)
+
+            input_scaling = self.args.tester.get("input_scaling", {})
+            target_sigma = input_scaling.get(
+                "target_sigma",
+                self.args.tester.posterior_sampling.warm_initialization.scaling_factor,
+            )
+            cond_to_target_std = input_scaling.get("cond_to_target_std", 0.3843)
+
+            # Deployable input scaling: only the observed binaural signal is used
+            # for sampler input. The clean target scaling below is for reference
+            # audio/debug denoising in this paired evaluation path.
+            y = y_raw * (target_sigma * cond_to_target_std) / (y_raw.std() + 1e-8)
+            seg = seg_raw * target_sigma / (seg_raw.std() + 1e-8)
+
+            # x0 = seg.unsqueeze(0).unsqueeze(0)
+            # sample=y.unsqueeze(0)
+            # sigma = torch.ones(1, device=x0.device) * 1e-5
+            # noise = torch.randn_like(x0)
+            # x_t = x0 + sigma[:, None, None] * noise
+
+            # x0_hat = self.sampler.diff_params.denoiser(
+            #     xn=x_t,
+            #     net=self.sampler.model,
+            #     t=sigma,
+            #     cond=sample,
+            # )
+            # path_reconstructed=utils_logging.write_audio_file(x0.detach().cpu(), self.args.exp.sample_rate,  os.path.basename(filename)[: -4]+"debug_x0", path=self.paths[mode+"reconstructed"],stereo=False)
+            # path_reconstructed=utils_logging.write_audio_file(x0_hat.detach().cpu(), self.args.exp.sample_rate,  os.path.basename(filename)[: -4]+"debug_x0_hat", path=self.paths[mode+"reconstructed"],stereo=False)
+            # break
+
             h_orig = torch.Tensor(h_orig).to(self.device)
+            
             pred = self.sampler.predict_conditional(y,h_orig=h_orig) #, operator_blind if blind else operator_ref, shape=(1,seg.shape[-1]), blind=blind)
-            f_name_new = os.path.basename(filename)[: -4]+f'_zeta_{self.args.tester.posterior_sampling.zeta}'+f'_h_orig'
+            f_name_new = os.path.basename(filename)[: -4]+f'_zeta_{self.args.tester.posterior_sampling.zeta}'+f'_h_orig'+f'_lambda_sisdr_{self.args.tester.sampling_params.lambda_sisdr}'+f'_lambda_stft_{self.args.tester.sampling_params.lambda_stft}'+f'_T_{self.args.tester.sampling_params.T}'
             path_original=utils_logging.write_audio_file(seg, self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"original"],stereo=False)
             path_degraded=utils_logging.write_audio_file(y.unsqueeze(0), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"degraded"],stereo=True)
+            # y_hat = self.sampler.conv_h(seg.unsqueeze(0).unsqueeze(0),h_orig)
+            # path_degraded=utils_logging.write_audio_file(y_hat, self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"degraded"],stereo=True)
+
             path_reconstructed=utils_logging.write_audio_file(pred, self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"reconstructed"],stereo=True)
             # path_h=utils_logging.write_audio_file(h.unsqueeze(0), self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"true_rir"],stereo=True)
 

@@ -83,21 +83,21 @@ def _main(args):
             find_unused_parameters=False,
         )
     # Tester
-    args.tester.sampling_params.same_as_training = True #Make sure that we use the same HP for sampling as the ones used in training
-    tester = None
-    trainer = hydra.utils.instantiate(
-    args.exp.trainer,
-    args=args,
-    dset=train_loader,
-    network=network,
-    diff_params=diff_params,
-    tester=None,
-    device=device,
-    is_main=is_main,
-    ddp=ddp,
-    train_sampler=None,
-    _recursive_=False,
-)
+#     args.tester.sampling_params.same_as_training = True #Make sure that we use the same HP for sampling as the ones used in training
+#     tester = None
+#     trainer = hydra.utils.instantiate(
+#     args.exp.trainer,
+#     args=args,
+#     dset=train_loader,
+#     network=network,
+#     diff_params=diff_params,
+#     tester=None,
+#     device=device,
+#     is_main=is_main,
+#     ddp=ddp,
+#     train_sampler=None,
+#     _recursive_=False,
+# )
     # tester=Tester(args, network, diff_params, test_set=test_loader, device=device, in_training=True)
 
     # Trainer

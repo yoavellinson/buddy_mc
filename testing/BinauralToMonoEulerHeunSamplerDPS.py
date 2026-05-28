@@ -327,10 +327,6 @@ class BinauralToMonoEulerHeunSamplerDPS(EulerHeunSampler):
             x, x_den,rec_loss_value = self.stepEM_h_orig(x, t[i] , t[i+1], gamma[i],i,h_orig)
             pbar.set_postfix({
                "rec": f"{rec_loss_value.item():.4f}"})
-        
-        # t_post = t[-2] if t[-1].item() == 0 else t[-1]
-        # with torch.no_grad():
-        #     x_den = self.get_Tweedie_estimate(x, t_post).detach()
         return x_den
 
     def predict_unconditional(self, *args, **kwargs):

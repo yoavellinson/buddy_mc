@@ -1,10 +1,8 @@
 from datetime import date
 import re
 import torch
-# import torchaudio
 import os
 import numpy as np
-import wandb
 import copy
 from glob import glob
 from tqdm import tqdm
@@ -64,6 +62,112 @@ class Tester():
 
         return var ** 0.5
 
+
+    def _prepare_binaural_time_for_cues(self, signal, channels=2):
+        signal = torch.as_tensor(signal, device=self.device, dtype=torch.float32)
+        while signal.ndim > 3 and 1 in signal.shape:
+            signal = signal.squeeze(0)
+
+        if signal.ndim == 1:
+            raise ValueError(f"Expected binaural signal, got shape {signal.shape}")
+        if signal.ndim == 2:
+            if signal.shape[0] == channels:
+                signal = signal.unsqueeze(0)
+            elif signal.shape[1] == channels:
+                signal = signal.T.unsqueeze(0)
+            else:
+                raise ValueError(f"Cannot infer channel axis for signal shape {signal.shape}")
+        elif signal.ndim == 3:
+            if signal.shape[1] == channels:
+                pass
+            elif signal.shape[2] == channels:
+                signal = signal.transpose(1, 2)
+            else:
+                raise ValueError(f"Cannot infer channel axis for signal shape {signal.shape}")
+        else:
+            raise ValueError(f"Expected signal with 2 or 3 dims, got {signal.shape}")
+
+        return signal
+
+    def estimate_ild_gains_for_cues(self, signal, channels=2):
+        signal = self._prepare_binaural_time_for_cues(signal, channels=channels)
+        channel_rms = signal.pow(2).mean(dim=-1).sqrt().clamp_min(1e-8)
+        mean_rms = channel_rms.mean(dim=1, keepdim=True).clamp_min(1e-8)
+        return channel_rms / mean_rms, channel_rms
+
+    def estimate_itd_samples_gcc_phat_for_cues(self, signal, max_delay_seconds=1e-3, channels=2):
+        signal = self._prepare_binaural_time_for_cues(signal, channels=channels)
+        B, C, T = signal.shape
+        sample_rate = getattr(self.args.exp, "sample_rate", 16000)
+        max_lag = max(1, int(round(max_delay_seconds * sample_rate)))
+        max_lag = min(max_lag, T - 1)
+
+        n_fft = 1 << int((2 * T - 1).bit_length())
+        ref_fft = torch.fft.rfft(signal[:, 0, :], n=n_fft)
+
+        delays = torch.zeros(B, C, device=signal.device, dtype=signal.dtype)
+        for c in range(1, C):
+            sig_fft = torch.fft.rfft(signal[:, c, :], n=n_fft)
+            cross = sig_fft * ref_fft.conj()
+            cross = cross / cross.abs().clamp_min(1e-8)
+            corr = torch.fft.irfft(cross, n=n_fft)
+            corr = torch.cat([corr[:, -max_lag:], corr[:, : max_lag + 1]], dim=-1)
+            lag_idx = corr.abs().argmax(dim=-1)
+            delays[:, c] = lag_idx.to(dtype=signal.dtype) - max_lag
+
+        return delays
+
+    def estimate_binaural_cues_for_diagnostics(self, signal, max_delay_seconds=1e-3, channels=2):
+        gains, rms = self.estimate_ild_gains_for_cues(signal, channels=channels)
+        delays = self.estimate_itd_samples_gcc_phat_for_cues(
+            signal,
+            max_delay_seconds=max_delay_seconds,
+            channels=channels,
+        )
+        sample_rate = getattr(self.args.exp, "sample_rate", 16000)
+        left = rms[:, 0].clamp_min(1e-8)
+        right = rms[:, 1].clamp_min(1e-8) if rms.shape[1] > 1 else left
+
+        return {
+            "rms": rms.detach(),
+            "ild_gains": gains.detach(),
+            "ild_right_minus_left_db": (20.0 * torch.log10(right / left)).detach(),
+            "itd_samples": delays.detach(),
+            "itd_us": (delays / float(sample_rate) * 1e6).detach(),
+        }
+
+    def format_binaural_cue_comparison(self, name_to_signal):
+        cues = {
+            name: self.estimate_binaural_cues_for_diagnostics(signal)
+            for name, signal in name_to_signal.items()
+        }
+        lines = []
+        for name, cue in cues.items():
+            gains = cue["ild_gains"][0].detach().cpu().tolist()
+            delays = cue["itd_samples"][0].detach().cpu().tolist()
+            delays_us = cue["itd_us"][0].detach().cpu().tolist()
+            ild_db = cue["ild_right_minus_left_db"][0].detach().cpu().item()
+            lines.append(
+                f"{name}: ILD R-L={ild_db:.2f} dB, "
+                f"gains={['%.3f' % g for g in gains]}, "
+                f"ITD samples={['%.2f' % d for d in delays]}, "
+                f"ITD us={['%.1f' % d for d in delays_us]}"
+            )
+
+        names = list(cues.keys())
+        if len(names) >= 2:
+            ref_name = names[0]
+            ref = cues[ref_name]
+            for name in names[1:]:
+                cue = cues[name]
+                ild_delta = (cue["ild_right_minus_left_db"] - ref["ild_right_minus_left_db"])[0].detach().cpu().item()
+                itd_delta = (cue["itd_samples"] - ref["itd_samples"])[0].detach().cpu().tolist()
+                lines.append(
+                    f"{name} - {ref_name}: delta ILD R-L={ild_delta:.2f} dB, "
+                    f"delta ITD samples={['%.2f' % d for d in itd_delta]}"
+                )
+
+        return "\n".join(lines)
 
     def load_latest_checkpoint(self):
         #load the latest checkpoint from self.args.model_dir
@@ -268,9 +372,124 @@ class Tester():
             # break
 
             h_orig = torch.Tensor(h_orig).to(self.device)
-            
-            pred = self.sampler.predict_conditional(y,h_orig=h_orig) #, operator_blind if blind else operator_ref, shape=(1,seg.shape[-1]), blind=blind)
-            f_name_new = os.path.basename(filename)[: -4]+f'_zeta_{self.args.tester.posterior_sampling.zeta}'+f'_h_orig'+f'_lambda_sisdr_{self.args.tester.sampling_params.lambda_sisdr}'+f'_lambda_stft_{self.args.tester.sampling_params.lambda_stft}'+f'_T_{self.args.tester.sampling_params.T}'
+
+            f_name_new = (
+                os.path.basename(filename)[: -4]
+                + f'_zeta_{self.args.tester.posterior_sampling.zeta}'
+                + '_h_orig'
+                + f'_lambda_sisdr_{self.args.tester.sampling_params.lambda_sisdr}'
+                + f'_lambda_stft_{self.args.tester.sampling_params.lambda_stft}'
+                + f'_T_{self.args.tester.sampling_params.T}'
+                + f'_eta{self.args.tester.sampling_params.eta}'
+                + f'_b{self.args.tester.sampling_params.beta}'
+                + f'_wu{self.args.tester.sampling_params.warmup_steps}'
+                + f'_hwu{self.args.tester.sampling_params.h_orig_warmup_mode}'
+                + f'_hf{self.args.tester.sampling_params.h_first_init}'
+                + f'_init_{self.args.tester.posterior_sampling.warm_initialization.mode}'
+            )
+            h_debug_dir = os.path.join(self.paths[mode], "h_tilde_vs_h_orig")
+            pred = self.sampler.predict_conditional(
+                y,
+                h_orig=h_orig,
+                h_debug_dir=h_debug_dir,
+                h_debug_name=f_name_new,
+                h_orig_ctf_x_ref=seg.unsqueeze(0).unsqueeze(0),
+                h_debug_x0=seg.unsqueeze(0).unsqueeze(0),
+            ) #, operator_blind if blind else operator_ref, shape=(1,seg.shape[-1]), blind=blind)
+            path_original=utils_logging.write_audio_file(seg, self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"original"],stereo=False)
+            path_degraded=utils_logging.write_audio_file(y.unsqueeze(0), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"degraded"],stereo=True)
+            # y_hat = self.sampler.conv_h(seg.unsqueeze(0).unsqueeze(0),h_orig)
+            # path_degraded=utils_logging.write_audio_file(y_hat, self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"degraded"],stereo=True)
+
+            path_reconstructed=utils_logging.write_audio_file(pred, self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"reconstructed"],stereo=True)
+            # path_h=utils_logging.write_audio_file(h.unsqueeze(0), self.args.exp.sample_rate, f_name_new, path=self.paths[mode+"true_rir"],stereo=True)
+
+            # Force Garbage Collection
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            print(path_reconstructed)
+
+    def test_blind_binaural_dereverberation(self, mode):
+
+        if self.test_set is None:
+            print("No test set specified")
+            return
+        if len(self.test_set) == 0:
+            print("No samples found in test set")
+            return
+        
+        for i, (original, rir, filename,h_orig,hrtf) in enumerate(tqdm(self.test_set)):
+            # if self.args.tester.sampling_params.lambda_sisdr ==0 and self.args.tester.sampling_params.lambda_stft == 0:
+            #     break
+            seg_raw = torch.from_numpy(original).float().to(self.device)
+
+            #read and prepare the RIR
+            y_raw=torch.Tensor(rir).to(self.device)
+
+            input_scaling = self.args.tester.get("input_scaling", {})
+            target_sigma = input_scaling.get(
+                "target_sigma",
+                self.args.tester.posterior_sampling.warm_initialization.scaling_factor,
+            )
+            cond_to_target_std = input_scaling.get("cond_to_target_std", 0.3843)
+
+            y = y_raw * (target_sigma * cond_to_target_std) / (y_raw.std() + 1e-8)
+            seg = seg_raw * target_sigma / (seg_raw.std() + 1e-8)
+
+
+            hrtf = torch.Tensor(hrtf).to(self.device)
+            h_orig_t = torch.Tensor(h_orig).to(self.device)
+
+            cue_report = self.format_binaural_cue_comparison({
+                "real_brir": h_orig_t,
+                "observed_y": y,
+                "anechoic_hrtf": hrtf,
+            })
+            cue_dir = os.path.join(self.paths[mode], "binaural_cue_diagnostics")
+            os.makedirs(cue_dir, exist_ok=True)
+            cue_path = os.path.join(cue_dir, os.path.basename(filename)[: -4] + "_ild_itd.txt")
+            with open(cue_path, "w") as f:
+                f.write(cue_report + "\n")
+            # print("\n" + cue_report)
+
+            run_tag = self.args.tester.sampling_params.get("run_tag", "blind")
+            f_name_new = (
+                os.path.basename(filename)[: -4]
+                + f'_r_{run_tag}'
+                + f'_z{self.args.tester.posterior_sampling.zeta}'
+                + f'_a{self.args.tester.sampling_params.alpha}'
+                + f'_e{self.args.tester.sampling_params.eta}'
+                + f'_b{self.args.tester.sampling_params.beta}'
+                + f'_i{self.args.tester.posterior_sampling.warm_initialization.mode}'
+                + f'_T{self.args.tester.sampling_params.T}'
+                + f'_wu{self.args.tester.sampling_params.warmup_steps}'
+                + f'_bs{self.args.tester.sampling_params.blind_schedule}'
+                + f'_lsisdr{self.args.tester.sampling_params.lambda_sisdr}'
+                + f'_lstft{self.args.tester.sampling_params.lambda_stft}'
+                + f'_hf{self.args.tester.sampling_params.h_first_init}'
+                + f'_td{self.args.tester.sampling_params.reverb_tail_delay}'
+            )
+            h_debug_dir = os.path.join(self.paths[mode], "h_tilde_0")
+            oracle_h_init = self.args.tester.sampling_params.h_first_init in (
+                "h_orig",
+                "h_orig_direct_decay",
+            )
+            sampler_kwargs = {
+                "h_debug_dir": h_debug_dir,
+                "h_debug_name": f_name_new,
+                "h_debug_x0": seg.unsqueeze(0).unsqueeze(0),
+            }
+            if oracle_h_init:
+                sampler_kwargs.update({
+                    "h_orig": h_orig_t,
+                    "h_orig_ctf_x_ref": seg.unsqueeze(0).unsqueeze(0),
+                })
+
+            pred = self.sampler.predict_unconditional(
+                y,
+                **sampler_kwargs,
+            ) #, operator_blind if blind else operator_ref, shape=(1,seg.shape[-1]), blind=blind)
             path_original=utils_logging.write_audio_file(seg, self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"original"],stereo=False)
             path_degraded=utils_logging.write_audio_file(y.unsqueeze(0), self.args.exp.sample_rate, os.path.basename(filename)[: -4], path=self.paths[mode+"degraded"],stereo=True)
             # y_hat = self.sampler.conv_h(seg.unsqueeze(0).unsqueeze(0),h_orig)
@@ -395,6 +614,14 @@ class Tester():
                     self.prepare_directories(m)
                     self.save_experiment_args(m)
                 self.test_binaural_dereverberation(m, blind=True)
+
+            elif m == "blind_binaural_dereverberation":
+                print("testing blind binaural dereverberation")
+                if not self.in_training:
+                    self.prepare_directories(m)
+                    self.save_experiment_args(m)
+                self.test_blind_binaural_dereverberation(m)
+
 
             elif m == "monaural_dereverberation":
                 print("testing binaural dereverberation")

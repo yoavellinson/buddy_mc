@@ -6,7 +6,7 @@ tester:
 sampler:
   _target_: 'testing.BinauralToMonoEulerHeunSamplerDPS.BinauralToMonoEulerHeunSamplerDPS'
 
-modes: ["binaural_dereverberation"] #modes to test 
+modes: ["blind_binaural_dereverberation"] #["binaural_dereverberation"] #modes to test 
 
 checkpoint: None
 
@@ -30,14 +30,17 @@ sampling_params:
   order: 2 #order of the sampler (1 or 2)
   T: 200 #number of discretizatio steprs
   schedule: "edm" #"log": log schedule using the parameters in sampling_params
-  warmup_steps: 50
+  warmup_steps: 300
+  blind_schedule: "standard" # "standard" or "learn_freeze"
   M: 48
   lambda_sisdr: 1.0
   alpha: 0.0
   lambda_stft: 0
-  eta: 0.99
+  h_first_init: "estimate" # "estimate", "observed_y_direct_decay", "h_orig", or "h_orig_direct_decay"
+  h_orig_warmup_mode: "h_orig" # "h_orig" or "denoise" for informed h_orig warmup
+  reverb_tail_delay: 3
+  eta: 0.5
   beta: 0.9
-  lambda_h : 1e-3
 
 posterior_sampling:
   zeta: 0.35

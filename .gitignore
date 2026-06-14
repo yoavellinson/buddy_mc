@@ -9,3 +9,5 @@ experiments*
 checkpoints/*
 experiments_binaural/*
 .vscode/*
+*multirun*
+*.pdf

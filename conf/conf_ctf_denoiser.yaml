@@ -1,0 +1,26 @@
+defaults:
+  - dset: vctk_16k_4s_binaural
+  - network: dncnn_ctf
+  - exp: VCTK_16k_4s_time
+  - logging: base_logging
+  - override hydra/launcher: joblib
+  - _self_
+
+model_dir: experiments_ctf_denoiser
+
+ctf:
+  n_fft: 510
+  hop_length: 128
+  # M controls the CTF memory. At 16 kHz and hop 128, M=192 covers about 1.54 s.
+  M: 96
+  normalize: true
+  ridge: 1e-4
+  log_reconstruction: true
+
+denoiser:
+  sigma_min: 0.01
+  sigma_max: 0.2
+  sigma_sampling: log
+  loss: noise
+  save_interval: 10000
+  log_interval: 100

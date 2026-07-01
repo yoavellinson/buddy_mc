@@ -158,7 +158,11 @@ class CTFGaussianDenoiserTrainer:
         self.train_sampler = train_sampler
         self.it = 0
 
-        self.ctf = CTFTransform(**OmegaConf.to_container(args.ctf, resolve=True))
+        ctf_cfg = OmegaConf.to_container(args.ctf, resolve=True)
+        ctf_transform_keys = {"n_fft", "hop_length", "M", "normalize", "ridge"}
+        self.ctf = CTFTransform(
+            **{k: v for k, v in ctf_cfg.items() if k in ctf_transform_keys}
+        )
         self.optimizer = hydra.utils.instantiate(args.exp.optimizer, params=network.parameters())
         self.ckpt_dir = os.path.join(args.model_dir, "checkpoints")
         os.makedirs(self.ckpt_dir, exist_ok=True)
@@ -278,7 +282,16 @@ class CTFGaussianDenoiserTrainer:
 
 
 def _main(args):
-    ddp = "LOCAL_RANK" in os.environ
+    ddp_env_keys = ("LOCAL_RANK", "RANK", "WORLD_SIZE")
+    ddp = all(k in os.environ for k in ddp_env_keys)
+
+    if not ddp and any(k in os.environ for k in ddp_env_keys):
+        print(
+            "Partial DDP environment detected; running single-process. "
+            f"Found: {[k for k in ddp_env_keys if k in os.environ]}",
+            flush=True,
+        )
+
     if ddp:
         dist.init_process_group(backend="nccl")
         local_rank = int(os.environ["LOCAL_RANK"])
@@ -326,17 +339,16 @@ def _main(args):
         print(f"Batch size:           {args.exp.batch_size}")
         print()
 
-    trainer = CTFGaussianDenoiserTrainer(
-        args=args,
-        loader=loader,
-        network=network,
-        device=device,
-        is_main=rank == 0,
-        ddp=ddp,
-        train_sampler=train_sampler,
-    )
-
     try:
+        trainer = CTFGaussianDenoiserTrainer(
+            args=args,
+            loader=loader,
+            network=network,
+            device=device,
+            is_main=rank == 0,
+            ddp=ddp,
+            train_sampler=train_sampler,
+        )
         trainer.training_loop()
     finally:
         if ddp and dist.is_initialized():
